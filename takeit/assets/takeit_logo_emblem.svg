@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Styles inlined as presentation attributes (flutter_svg ignores <style> CSS). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
+  <g id="takeit-emblem" fill="none">
+    <path d="M 100 22 A 34 78 0 0 0 100 178" transform="rotate(15 100 100)" stroke="#3E6D52" stroke-opacity="0.45" stroke-width="13" stroke-linecap="round" />
+    <ellipse cx="100" cy="100" rx="78" ry="32" transform="rotate(-25 100 100)" stroke="#3E6D52" stroke-opacity="0.45" stroke-width="13" />
+    <path d="M 32.45 83 A 78 34 0 0 1 167.55 83" transform="rotate(35 100 100)" stroke="#3E6D52" stroke-opacity="0.45" stroke-width="13" stroke-linecap="round" />
+    <path d="M 100 178 A 34 78 0 0 0 100 22" transform="rotate(15 100 100)" stroke="#3E6D52" stroke-width="13" stroke-linecap="round" />
+    <path d="M 32.45 83 A 78 34 0 1 0 170.7 114.4" transform="rotate(35 100 100)" stroke="#3E6D52" stroke-width="13" stroke-linecap="round" />
+    <g transform="rotate(35 100 100)">
+      <polygon points="15 0, -5 -10, -1.5 0, -5 10" fill="#3E6D52" transform="translate(170.7 114.4) rotate(-43)" />
+    </g>
+  </g>
+</svg>

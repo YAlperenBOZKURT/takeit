@@ -1,0 +1,36 @@
+# ── OS junk ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local tooling state (Claude Code, etc.) ──
+.claude/settings.local.json
+
+# ── Local run/debug output ──
+run_log.txt
+**/run_log.txt
+
+# ── Editors / IDEs ──
+.idea/
+*.iml
+*.swp
+*~
+
+# ── Python (icon generation scripts) ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Flutter / Dart build artifacts (belt-and-suspenders; takeit/.gitignore
+#    already covers these, but guard against them ever landing at root) ──
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+*.log
+
+# ── Local secrets / signing (never commit) ──
+**/key.properties
+**/*.keystore
+**/*.jks

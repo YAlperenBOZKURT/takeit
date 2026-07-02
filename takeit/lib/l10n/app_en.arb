@@ -1,0 +1,267 @@
+{
+  "@@locale": "en",
+
+  "chooseNickname": "Choose your nickname",
+  "nicknamePlaceholder": "e.g.",
+  "leaveEmptyHint": "Leave empty for a random name. Your nickname will be saved.",
+  "continueBtn": "Continue",
+
+  "nearbyDevices": "Nearby Devices",
+  "nearbyTab": "Nearby",
+  "settings": "Settings",
+  "transferHistory": "Transfer History",
+  "newRoom": "New Room",
+  "noDevicesFound": "No devices found",
+  "makeOthersOpen": "Make sure others have TakeIt open\non the same network.",
+  "scanning": "Scanning...",
+  "devicesOnNetwork": "{count, plural, =1{1 device on this network} other{{count} devices on this network}}",
+  "@devicesOnNetwork": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+
+  "chatRoom": "Chat Room",
+  "typeMessage": "Type a message...",
+  "fileNotFound": "File not found",
+
+  "fileTransfer": "File Transfer",
+  "transferring": "Transferring files...",
+  "accept": "Accept",
+  "decline": "Decline",
+  "wantsToSend": "{name} wants to send you a file",
+  "@wantsToSend": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+
+  "all": "All",
+  "files": "Files",
+  "noTransfersYet": "No transfers yet",
+  "historyWillAppear": "Your file transfer history will appear here.",
+  "clearHistory": "Clear history",
+  "clearHistoryConfirm": "Clear history?",
+  "clearHistoryMsg": "This will remove all transfer records.",
+  "clear": "Clear",
+  "cancel": "Cancel",
+  "filePathNotAvailable": "File path not available",
+
+  "profile": "Profile",
+  "nickname": "Nickname",
+  "changeNickname": "Change nickname",
+  "enterNewNickname": "Enter new nickname",
+  "resetToRandom": "Reset to random name",
+  "nicknameRandomized": "Nickname set to \"{name}\"",
+  "@nicknameRandomized": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "save": "Save",
+  "appearance": "Appearance",
+  "systemDefault": "System default",
+  "light": "Light",
+  "dark": "Dark",
+  "modern": "Modern",
+  "network": "Network",
+  "restartServer": "Restart server",
+  "restartServerDesc": "Restart HTTP server & re-discover devices",
+  "serverRestarted": "Server restarted successfully",
+  "restartFailed": "Restart failed: {error}",
+  "@restartFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "about": "About",
+  "appDesc": "Local network file sharing",
+  "language": "Language",
+  "nicknameChanged": "Nickname changed to \"{name}\"",
+  "@nicknameChanged": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+
+  "downloadLocation": "Download Location",
+  "downloadLocationDesc": "Folder where files will be saved",
+  "defaultLocation": "Default (Downloads)",
+  "changeFolder": "Change Folder",
+  "resetToDefault": "Reset to Default",
+  "openFolder": "Open Folder",
+  "folderNotFound": "Folder not found",
+  "wifiWarning": "Please make sure you are on the same WiFi network as the target device.",
+
+  "dropFilesHere": "Drop files here",
+  "clipboardShared": "Clipboard shared",
+  "copy": "Copy",
+  "close": "Close",
+  "clipboardFrom": "Clipboard from {name}",
+  "@clipboardFrom": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "copiedToClipboard": "Copied to clipboard",
+  "clipboardEmpty": "Clipboard is empty",
+
+  "quickSend": "Quick Send",
+  "quickSendTitle": "Quick Send",
+  "quickSendFrom": "{name} wants to send you a file",
+  "@quickSendFrom": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "quickTextFrom": "Message from {name}",
+  "@quickTextFrom": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "selectRecipients": "Select recipients",
+  "quickTextHint": "Type the text you want to send...",
+  "sendText": "Send Text",
+  "sendFile": "Send File",
+  "file": "File",
+  "text": "Text",
+  "inRoom": "In a room",
+  "userInRoom": "This person is currently in a room",
+  "dropOrAddFiles": "Drop or add files",
+  "addFile": "Add File",
+  "paste": "Paste",
+  "itemsReady": "item(s) ready",
+  "selectRecipientsBtn": "Select Recipients",
+  "send": "Send",
+  "addButton": "Add",
+  "nothingAddedYet": "Nothing added yet",
+  "sendingFiles": "Sending files…",
+  "filesSent": "Files sent",
+
+  "switchRoomTitle": "Switch Room",
+  "switchRoomMsg": "You have an active room with \"{members}\". Creating a new room will close the current one.",
+  "@switchRoomMsg": {
+    "placeholders": {
+      "members": { "type": "String" }
+    }
+  },
+  "activeTransferWarning": "Active file transfers will be cancelled!",
+  "switchRoom": "Switch Room",
+
+  "createRoom": "Create Room",
+  "roomInvite": "Room Invite",
+  "invitesYou": "{name} invites you to a room",
+  "@invitesYou": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "join": "Join",
+  "leaveRoom": "Leave Room",
+  "leaveRoomConfirm": "Are you sure you want to leave this room?",
+  "noMessages": "No messages yet.\nSay hello!",
+  "activeRoom": "Active Room",
+  "tapToReturn": "Tap to return to chat",
+
+  "sessionTransfersTitle": "Transfers",
+  "transfers": "Transfers",
+  "activeSection": "ACTIVE",
+  "completedSection": "COMPLETED",
+  "failedSection": "FAILED",
+  "sending": "Sending",
+  "receiving": "Receiving",
+  "unreachableDevices": "Could not reach {names}",
+  "@unreachableDevices": {
+    "placeholders": {
+      "names": { "type": "String" }
+    }
+  },
+
+  "selectUpTo4": "Select up to 4 people",
+  "roomCreated": "Room created",
+  "statusPending": "Pending",
+  "statusAccepted": "Accepted",
+  "statusDeclined": "Declined",
+  "statusOffline": "Offline",
+  "waitingForResponses": "Waiting for responses...",
+  "roomSource": "Room",
+  "quickSendSource": "Quick Send",
+  "filesQueued": "+{count} {count, plural, =1{file} other{files}} queued",
+  "@filesQueued": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "selectAll": "Select all",
+  "selectNone": "Select none",
+  "acceptSelected": "Accept selected ({count})",
+  "@acceptSelected": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "retry": "Retry",
+  "fileNotFoundRetry": "Source file no longer exists",
+
+  "openFile": "Open File",
+  "openFileLocation": "Open File Location",
+  "info": "Info",
+  "deleteFromHistory": "Delete from History",
+  "deleteRecordConfirm": "Delete this record from history?",
+  "delete": "Delete",
+  "recordDeleted": "Record deleted",
+  "transferDate": "Date",
+  "transferSize": "Size",
+  "transferPeer": "Peer",
+  "transferDirection": "Direction",
+  "transferSavePath": "Save Location",
+  "directionSent": "Sent",
+  "directionReceived": "Received",
+  "filterSent": "Sent",
+  "filterReceived": "Received",
+  "filterAll": "All",
+  "textFilter": "Text",
+  "portBusyTitle": "Port In Use",
+  "portBusyMessage": "Port 53317 is already in use by another application. Please close the other application and try again.",
+  "ok": "OK",
+
+  "quickRoom": "Quick Room",
+  "trustDevice": "Trust",
+  "untrustDevice": "Remove Trust",
+  "blockDevice": "Block",
+  "unblockDevice": "Unblock",
+  "deviceTrusted": "{name} is now trusted",
+  "@deviceTrusted": { "placeholders": { "name": { "type": "String" } } },
+  "deviceUntrusted": "{name} is no longer trusted",
+  "@deviceUntrusted": { "placeholders": { "name": { "type": "String" } } },
+  "deviceBlocked": "{name} is now blocked",
+  "@deviceBlocked": { "placeholders": { "name": { "type": "String" } } },
+  "deviceUnblocked": "{name} is now unblocked",
+  "@deviceUnblocked": { "placeholders": { "name": { "type": "String" } } },
+
+  "notificationSound": "Notification sound",
+  "notificationSoundDesc": "Play sound when a file arrives",
+  "notificationVibration": "Vibration",
+  "notificationVibrationDesc": "Vibrate when a file arrives",
+  "noConnection": "No network connection",
+  "connectionRestored": "Connection restored",
+  "clearTempFiles": "Clear temp files",
+  "clearTempFilesDesc": "Delete leftover files from incomplete transfers",
+  "tempFilesCleared": "Temp files cleared ({count})",
+  "@tempFilesCleared": { "placeholders": { "count": { "type": "int" } } },
+  "noTempFiles": "No temp files to clear",
+
+  "chat": "Chat",
+  "noActiveRoom": "No active room",
+  "copied": "Copied",
+  "developer": "Developer",
+  "wantsToSendFile": "Wants to send: {fileName}",
+  "@wantsToSendFile": { "placeholders": { "fileName": { "type": "String" } } },
+  "roomInviteNotif": "Room Invite",
+  "invitesYouToRoom": "{name} invites you to a room",
+  "@invitesYouToRoom": { "placeholders": { "name": { "type": "String" } } },
+  "fileDeclined": "Declined",
+  "transferDeclinedToast": "Your transfer was declined",
+  "transferFailedToast": "Transfer failed"
+}

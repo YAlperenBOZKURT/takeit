@@ -1,0 +1,241 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
+
+env:
+  APP_NAME: 'TakeIt'
+
+jobs:
+  # -----------------------------------------------------------
+  # ANDROID (.apk)
+  # -----------------------------------------------------------
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build APK
+        working-directory: takeit
+        run: flutter build apk --release
+
+      - name: Rename APK
+        working-directory: takeit
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/TakeIt-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: takeit/build/app/outputs/flutter-apk/TakeIt-*.apk
+
+  # -----------------------------------------------------------
+  # WINDOWS (.exe + Inno Setup installer)
+  # -----------------------------------------------------------
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Build Windows release
+        working-directory: takeit
+        run: flutter build windows --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        working-directory: takeit
+        shell: cmd
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Rename installer
+        working-directory: takeit
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          Rename-Item "build\installer\TakeIt_Setup.exe" "TakeIt-Setup-$version.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: takeit/build/installer/TakeIt-Setup-*.exe
+
+  # -----------------------------------------------------------
+  # MACOS (.dmg)
+  # -----------------------------------------------------------
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Build macOS release
+        working-directory: takeit
+        run: flutter build macos --release
+
+      - name: Package as DMG
+        working-directory: takeit
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP_PATH="build/macos/Build/Products/Release/takeit.app"
+          DMG_NAME="TakeIt-${VERSION}.dmg"
+          brew install create-dmg
+          create-dmg \
+            --volname "TakeIt" \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --app-drop-link 400 200 \
+            --icon "takeit.app" 200 200 \
+            "$DMG_NAME" \
+            "$APP_PATH" || true
+          # Fallback if create-dmg fails (unsigned apps sometimes trip it)
+          if [ ! -f "$DMG_NAME" ]; then
+            hdiutil create -volname "TakeIt" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_NAME"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: takeit/TakeIt-*.dmg
+
+  # -----------------------------------------------------------
+  # LINUX (tar.gz — AppImage can be added later)
+  # -----------------------------------------------------------
+  build-linux:
+    name: Build Linux Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev libstdc++-12-dev libnotify-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Enable Linux desktop
+        run: flutter config --enable-linux-desktop
+
+      - name: Build Linux release
+        working-directory: takeit
+        run: flutter build linux --release
+
+      - name: Package as tar.gz
+        working-directory: takeit
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd build/linux/x64/release/bundle
+          tar -czf "../../../../../TakeIt-${VERSION}-linux-x64.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: takeit/TakeIt-*-linux-x64.tar.gz
+
+  # -----------------------------------------------------------
+  # RELEASE — collect all artifacts and publish
+  # -----------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: [build-android, build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TakeIt ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/TakeIt-*.apk
+            artifacts/TakeIt-Setup-*.exe
+            artifacts/TakeIt-*.dmg
+            artifacts/TakeIt-*-linux-x64.tar.gz

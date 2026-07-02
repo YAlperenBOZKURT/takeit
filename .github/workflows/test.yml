@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code (freezed / json / riverpod)
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Verify formatting
+        working-directory: takeit
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        working-directory: takeit
+        run: flutter analyze
+
+      - name: Run tests
+        working-directory: takeit
+        run: flutter test --reporter expanded
