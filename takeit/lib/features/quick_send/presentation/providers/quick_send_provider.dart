@@ -91,7 +91,10 @@ class QuickSendDraftNotifier extends StateNotifier<List<QuickSendDraftItem>> {
   }
 
   void removeAt(int index) {
-    state = [for (var i = 0; i < state.length; i++) if (i != index) state[i]];
+    state = [
+      for (var i = 0; i < state.length; i++)
+        if (i != index) state[i],
+    ];
   }
 
   void clear() => state = [];

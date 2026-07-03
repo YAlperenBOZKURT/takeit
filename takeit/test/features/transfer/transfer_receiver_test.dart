@@ -99,7 +99,11 @@ void main() {
     client.close();
 
     final entry = (body['files'] as List).first as Map<String, dynamic>;
-    expect(entry['accepted'], isTrue, reason: 'trusted sender must auto-accept');
+    expect(
+      entry['accepted'],
+      isTrue,
+      reason: 'trusted sender must auto-accept',
+    );
     return (entry['sessionId'] as String, entry['token'] as String);
   }
 
@@ -161,8 +165,7 @@ void main() {
     );
   });
 
-  test('upload with a wrong token is rejected before any disk write',
-      () async {
+  test('upload with a wrong token is rejected before any disk write', () async {
     final (sessionId, _) = await prepare('rejected.bin', 1024);
 
     final status = await upload(sessionId, 'wrong-token', [1, 2, 3]);

@@ -42,7 +42,9 @@ void main() {
   test('one source finishing does not release the other\'s lock', () {
     TransferKeepAlive.setActive('room', true);
     TransferKeepAlive.setActive('quick', true);
-    expect(wakelock.toggles, [true], reason: 'second source must not re-enable');
+    expect(wakelock.toggles, [
+      true,
+    ], reason: 'second source must not re-enable');
 
     // Room finishes while quick is still transferring — lock must hold.
     TransferKeepAlive.setActive('room', false);

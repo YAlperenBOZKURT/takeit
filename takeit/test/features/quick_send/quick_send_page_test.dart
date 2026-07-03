@@ -84,8 +84,9 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('shows a loading state while the picker is preparing files',
-      (tester) async {
+  testWidgets('shows a loading state while the picker is preparing files', (
+    tester,
+  ) async {
     await pumpPage(tester);
 
     await tester.tap(find.text('Add File'));
@@ -106,8 +107,9 @@ void main() {
     expect(find.text('photo.png'), findsOneWidget);
   });
 
-  testWidgets('cancelled pick clears the loading state and adds nothing',
-      (tester) async {
+  testWidgets('cancelled pick clears the loading state and adds nothing', (
+    tester,
+  ) async {
     await pumpPage(tester);
 
     await tester.tap(find.text('Add File'));
@@ -122,8 +124,9 @@ void main() {
     expect(find.text('Clear All'), findsNothing);
   });
 
-  testWidgets('Clear All appears with files and empties the list',
-      (tester) async {
+  testWidgets('Clear All appears with files and empties the list', (
+    tester,
+  ) async {
     await pumpPage(tester);
     expect(find.text('Clear All'), findsNothing);
 
