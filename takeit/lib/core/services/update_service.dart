@@ -114,11 +114,24 @@ class UpdateService {
       await Process.start(filePath, [], runInShell: true);
       exit(0);
     } else if (Platform.isAndroid) {
-      await OpenFilex.open(filePath);
+      // OpenFilex only launches the system package installer — it doesn't
+      // throw when that fails (permission denied, no handler, bad file), it
+      // just returns a non-"done" result. Ignoring that result is why a
+      // failed install used to look identical to a successful one: the
+      // dialog closed either way with nothing telling the user to retry.
+      final result = await OpenFilex.open(filePath);
+      if (result.type != ResultType.done) {
+        throw Exception(result.message);
+      }
     } else if (Platform.isMacOS) {
       await _installMacOS(filePath);
     } else if (Platform.isLinux) {
-      await Process.run('xdg-open', [File(filePath).parent.path]);
+      final result = await Process.run('xdg-open', [
+        File(filePath).parent.path,
+      ]);
+      if (result.exitCode != 0) {
+        throw Exception('xdg-open failed: ${result.stderr}');
+      }
     }
   }
 

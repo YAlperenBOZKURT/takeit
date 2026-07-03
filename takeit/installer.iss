@@ -1,6 +1,14 @@
+; Passed in by CI via `ISCC.exe /DMyAppVersion=x.y.z installer.iss` (see
+; release.yml) so the installer's DisplayVersion — what Windows shows in
+; "Apps & Features" / Add-Remove Programs — always matches the release tag
+; instead of being frozen at whatever version was hardcoded here.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
+
 [Setup]
 AppName=TakeIt
-AppVersion=1.0.0
+AppVersion={#MyAppVersion}
 AppPublisher=TakeIt
 DefaultDirName={autopf}\TakeIt
 DefaultGroupName=TakeIt
