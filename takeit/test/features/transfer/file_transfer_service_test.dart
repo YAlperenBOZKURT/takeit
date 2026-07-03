@@ -59,11 +59,22 @@ void main() {
       tempFiles.add(file);
 
       var serverBytes = 0;
+      // Bytes/sec target rather than a fixed per-chunk delay: the OS/runtime
+      // batches the stream into however many chunks it wants (observed as
+      // few as ~50 large reads on some CI runners vs. many small ones
+      // locally), so a fixed per-chunk delay makes total elapsed time
+      // depend on chunk count instead of the upload size. Scaling the delay
+      // by chunk.length keeps total throttle time ~constant everywhere.
+      const throttleBytesPerSecond = 4 * 1024 * 1024;
       final server = await startServer((req) async {
         await for (final chunk in req) {
           serverBytes += chunk.length;
           // Throttle reads so the whole upload takes well over 30s.
-          await Future.delayed(const Duration(milliseconds: 25));
+          await Future.delayed(
+            Duration(
+              microseconds: chunk.length * 1000000 ~/ throttleBytesPerSecond,
+            ),
+          );
         }
         req.response.statusCode = 200;
         req.response.write('{"status":"completed"}');

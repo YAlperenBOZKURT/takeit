@@ -1,0 +1,24 @@
+#!/bin/sh
+# Auto-formats staged Dart files before every commit so CI's
+# `dart format --output=none --set-exit-if-changed lib test` never fails on
+# something that could've been fixed locally first.
+
+DART_BIN="dart"
+if ! command -v dart >/dev/null 2>&1 || ! dart --version >/dev/null 2>&1; then
+  # WSL: the flutter/bin wrapper scripts can choke on CRLF line endings when
+  # the SDK was installed from Windows; fall back to the bundled dart-sdk exe.
+  DART_BIN="/mnt/c/flutter/bin/cache/dart-sdk/bin/dart.exe"
+fi
+
+if ! command -v "$DART_BIN" >/dev/null 2>&1 && [ ! -x "$DART_BIN" ]; then
+  echo "pre-commit: dart SDK not found, skipping format check" >&2
+  exit 0
+fi
+
+FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.dart')
+if [ -z "$FILES" ]; then
+  exit 0
+fi
+
+echo "$FILES" | xargs "$DART_BIN" format
+echo "$FILES" | xargs git add
