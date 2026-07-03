@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -69,6 +70,8 @@ class _TakeItAppState extends ConsumerState<TakeItApp>
   }
 
   Future<void> _checkForUpdate() async {
+    unawaited(UpdateService.cleanupStaleInstallers());
+
     final info = await UpdateService.checkForUpdate();
     if (info == null || !mounted) return;
     final ctx = _router.routerDelegate.navigatorKey.currentContext;

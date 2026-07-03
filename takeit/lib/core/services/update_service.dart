@@ -109,6 +109,32 @@ class UpdateService {
     return savePath;
   }
 
+  /// Sweeps installer files left over from a previous update attempt.
+  ///
+  /// Safe to call on every launch: by the time the app runs again, any prior
+  /// install either completed (this process IS the new version) or was
+  /// abandoned, so nothing still needs that file. Deliberately skips the
+  /// Linux tar.gz — that one is never auto-installed, the user has to open
+  /// and act on it themselves, so removing it could delete something they
+  /// still meant to extract.
+  static Future<void> cleanupStaleInstallers() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        final isInstaller =
+            (name.startsWith('TakeIt-Setup-') && name.endsWith('.exe')) ||
+            (name.startsWith('TakeIt-') && name.endsWith('.apk')) ||
+            (name.startsWith('TakeIt-') && name.endsWith('.dmg'));
+        if (!isInstaller) continue;
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   static Future<void> install(String filePath) async {
     if (Platform.isWindows) {
       await Process.start(filePath, [], runInShell: true);

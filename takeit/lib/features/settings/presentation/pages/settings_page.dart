@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/l10n/app_strings.dart';
 import '../../../../core/network/local_ip.dart';
 import '../../../../core/services/notification_service.dart';
+import '../../../../core/services/update_service.dart';
 import '../../../discovery/presentation/providers/discovery_provider.dart';
 import '../../../nickname/presentation/providers/nickname_provider.dart';
 import '../../../room/presentation/providers/room_provider.dart';
@@ -154,14 +155,7 @@ class SettingsPage extends ConsumerWidget {
           const Divider(),
 
           _SectionHeader(title: s.about),
-          ListTile(
-            leading: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.asset('assets/logo.png', width: 40, height: 40),
-            ),
-            title: const Text('TakeIt'),
-            subtitle: Text('v1.0.0 — ${s.appDesc}'),
-          ),
+          const _AppVersionTile(),
           ListTile(
             leading: const Icon(Icons.code),
             title: const Text('Yusuf Alperen Bozkurt'),
@@ -260,6 +254,31 @@ class SettingsPage extends ConsumerWidget {
         );
       }
     }
+  }
+}
+
+class _AppVersionTile extends StatelessWidget {
+  const _AppVersionTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppStrings.of(context);
+    return FutureBuilder<String>(
+      future: UpdateService.currentVersion(),
+      builder: (context, snap) {
+        final version = snap.data;
+        return ListTile(
+          leading: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.asset('assets/logo.png', width: 40, height: 40),
+          ),
+          title: const Text('TakeIt'),
+          subtitle: Text(
+            version == null ? s.appDesc : 'v$version — ${s.appDesc}',
+          ),
+        );
+      },
+    );
   }
 }
 
