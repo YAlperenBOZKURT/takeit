@@ -6,7 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/http_client.dart';
+import '../../../../core/network/http_server.dart';
 import '../../../../core/services/notification_service.dart';
+import '../../../../core/services/transfer_keep_alive.dart';
 import '../../../../core/services/transfer_queue_service.dart';
 import '../../../../core/services/window_alert_service.dart';
 import '../../../../main.dart';
@@ -42,6 +44,9 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   final FileTransferService _service = FileTransferService();
   final Dio _client = createHttpClient();
 
+  /// Cached at construction — dispose() must not call _ref.read().
+  late final AppHttpServer _server = _ref.read(httpServerProvider);
+
   /// Accepted sessions waiting for upload (sessionId → metadata).
   final Map<String, _AcceptedSession> _acceptedSessions = {};
 
@@ -64,11 +69,10 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
 
   @override
   void dispose() {
-    final server = _ref.read(httpServerProvider);
-    server.unregisterHandler('/api/takeit/v1/transfer/prepare-batch');
-    server.unregisterHandler('/api/takeit/v1/transfer/upload');
-    server.unregisterHandler('/api/takeit/v1/transfer/cancel');
-    server.unregisterHandler('/api/takeit/v1/transfer/cancel-batch');
+    _server.unregisterHandler('/api/takeit/v1/transfer/prepare-batch');
+    _server.unregisterHandler('/api/takeit/v1/transfer/upload');
+    _server.unregisterHandler('/api/takeit/v1/transfer/cancel');
+    _server.unregisterHandler('/api/takeit/v1/transfer/cancel-batch');
     for (final t in _progressTimers.values) {
       t?.cancel();
     }
@@ -76,14 +80,13 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   void _registerHandlers() {
-    final server = _ref.read(httpServerProvider);
-    server.registerHandler(
+    _server.registerHandler(
       '/api/takeit/v1/transfer/prepare-batch',
       _handlePrepareBatch,
     );
-    server.registerHandler('/api/takeit/v1/transfer/upload', _handleUpload);
-    server.registerHandler('/api/takeit/v1/transfer/cancel', _handleCancel);
-    server.registerHandler(
+    _server.registerHandler('/api/takeit/v1/transfer/upload', _handleUpload);
+    _server.registerHandler('/api/takeit/v1/transfer/cancel', _handleCancel);
+    _server.registerHandler(
       '/api/takeit/v1/transfer/cancel-batch',
       _handleCancelBatch,
     );
@@ -251,27 +254,35 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
       startedAt: DateTime.now(),
     );
     state = [...state, session];
-    BackgroundTransferService.startIfNeeded();
+    _syncKeepAlive();
 
     IOSink? sink;
+    var bytesReceived = 0;
+    final receiveStartedAt = DateTime.now();
     try {
       final file = File(savePath);
       sink = file.openWrite();
-      var bytesReceived = 0;
-      var lastChunkTime = DateTime.now();
+      var bytesSinceFlush = 0;
 
-      // Stream with chunk timeout detection
-      await for (final chunk in request.read()) {
-        final now = DateTime.now();
-        final gap = now.difference(lastChunkTime);
+      debugPrint(
+        'Receiving ${accepted.fileName} (${accepted.fileSize} bytes) '
+        '→ $savePath',
+      );
 
-        // If no data for 30s, sender likely disconnected
-        if (gap > const Duration(seconds: 30)) {
-          throw TimeoutException(
-            'No data received for ${gap.inSeconds}s — sender disconnected',
-          );
-        }
+      // Stall detection must live on the stream itself: a check inside the
+      // loop body only runs when a chunk arrives, so it can never catch a
+      // stream that goes silent (and would kill one that recovers).
+      final body = request.read().timeout(
+        kReceiveStallTimeout,
+        onTimeout: (eventSink) => eventSink.addError(
+          TimeoutException(
+            'No data received for ${kReceiveStallTimeout.inSeconds}s — '
+            'sender disconnected',
+          ),
+        ),
+      );
 
+      await for (final chunk in body) {
         // Check if user cancelled on this side
         final current = state
             .where((s) => s.sessionId == sessionId)
@@ -282,12 +293,18 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
 
         sink.add(chunk);
         bytesReceived += chunk.length;
-        lastChunkTime = now;
+        bytesSinceFlush += chunk.length;
+        // Bound IOSink buffering: without this, a disk slower than the
+        // network lets the in-memory write buffer grow without limit.
+        if (bytesSinceFlush >= kReceiveFlushBytes) {
+          await sink.flush().timeout(kWriteStallTimeout);
+          bytesSinceFlush = 0;
+        }
         _updateProgress(sessionId, bytesReceived);
       }
 
-      await sink.flush();
-      await sink.close();
+      await sink.flush().timeout(kWriteStallTimeout);
+      await sink.close().timeout(kWriteStallTimeout);
       sink = null;
 
       // Reject truncated/over-long transfers instead of reporting success.
@@ -297,6 +314,11 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
           '${accepted.fileSize} bytes',
         );
       }
+
+      debugPrint(
+        'Received ${accepted.fileName}: $bytesReceived bytes in '
+        '${DateTime.now().difference(receiveStartedAt).inSeconds}s',
+      );
 
       _flushProgress(sessionId);
       _updateSession(
@@ -332,7 +354,11 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {
-      debugPrint('Upload receive error: $e');
+      debugPrint(
+        'Upload receive error for ${accepted.fileName} after '
+        '$bytesReceived/${accepted.fileSize} bytes '
+        '(${DateTime.now().difference(receiveStartedAt).inSeconds}s): $e',
+      );
       final isCancel = e is _ReceiverCancelled;
       _flushProgress(sessionId);
       _updateSession(
@@ -471,7 +497,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
         ),
       ];
     }
-    BackgroundTransferService.startIfNeeded();
+    _syncKeepAlive();
 
     List<dynamic>? results;
     final bId = batchId ?? const Uuid().v4();
@@ -703,14 +729,20 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
       BackgroundTransferService.updateProgress(updated.fileName, percent);
     }
 
-    final hasActive = state.any(
-      (s) =>
-          s.status == TransferStatus.inProgress ||
-          s.status == TransferStatus.pending,
+    _syncKeepAlive();
+  }
+
+  /// Report room-transfer activity to the shared keep-alive (wakelock +
+  /// foreground service). Source-scoped so quick-send activity is unaffected.
+  void _syncKeepAlive() {
+    TransferKeepAlive.setActive(
+      'room',
+      state.any(
+        (s) =>
+            s.status == TransferStatus.inProgress ||
+            s.status == TransferStatus.pending,
+      ),
     );
-    if (!hasActive) {
-      BackgroundTransferService.stop();
-    }
   }
 
   /// Throttled progress update — collects bytes and flushes to state max every 100ms.

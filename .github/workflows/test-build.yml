@@ -1,0 +1,139 @@
+# Test builds: every push to `dev` (or manual run on any branch) publishes a
+# rolling `test-latest` PRE-release with a phone-friendly direct APK link and
+# a Windows installer. Being a prerelease keeps it out of `releases/latest`,
+# so the in-app update checker never offers test builds to real users.
+#
+# Flow: push to dev → download from the test-latest release → test on
+# devices → merge dev into main and tag vX.Y.Z → release.yml ships the same
+# commit for real.
+name: Test Build
+
+on:
+  push:
+    branches: ['dev']
+  workflow_dispatch:
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android APK (test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build APK
+        working-directory: takeit
+        run: flutter build apk --release
+
+      - name: Rename APK
+        working-directory: takeit
+        # Stable file name → stable download URL on the phone.
+        run: mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/TakeIt-test.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-android-apk
+          path: takeit/build/app/outputs/flutter-apk/TakeIt-test.apk
+
+  build-windows:
+    name: Build Windows Installer (test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: takeit
+        run: flutter pub get
+
+      - name: Generate code
+        working-directory: takeit
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Build Windows release
+        working-directory: takeit
+        run: flutter build windows --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        working-directory: takeit
+        shell: cmd
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Rename installer
+        working-directory: takeit
+        shell: pwsh
+        run: Rename-Item "build\installer\TakeIt_Setup.exe" "TakeIt-Setup-test.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-windows-installer
+          path: takeit/build/installer/TakeIt-Setup-test.exe
+
+  publish-prerelease:
+    name: Publish test-latest prerelease
+    needs: [build-android, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Recreate the rolling prerelease so the tag always points at the
+      # commit that was actually built (updating assets alone would leave
+      # the tag on the old commit).
+      - name: Recreate test-latest release
+        run: |
+          gh release delete test-latest --yes || true
+          git push --delete origin test-latest || true
+          gh release create test-latest \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Test build (${GITHUB_SHA::7})" \
+            --notes "Automated test build — not for end users.
+
+          Branch: \`${GITHUB_REF_NAME}\`
+          Commit: ${GITHUB_SHA}
+          Built:  $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            dist/TakeIt-test.apk \
+            dist/TakeIt-Setup-test.exe

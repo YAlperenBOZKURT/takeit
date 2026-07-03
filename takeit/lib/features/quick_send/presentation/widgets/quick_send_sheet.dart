@@ -11,40 +11,6 @@ import '../../../discovery/presentation/providers/discovery_provider.dart';
 import '../../../room/presentation/providers/room_provider.dart';
 import '../providers/quick_send_provider.dart';
 
-/// An item queued for sending: either a file or a text snippet.
-class _SendItem {
-  final String? filePath;
-  final String? fileName;
-  final int? fileSize;
-  final String? text;
-
-  bool get isFile => filePath != null;
-  bool get isText => text != null;
-
-  String get displayName => isFile ? fileName! : 'Text';
-  String get displaySize {
-    if (isText) return '${text!.length} chars';
-    final bytes = fileSize ?? 0;
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
-  _SendItem.file({
-    required this.filePath,
-    required this.fileName,
-    required this.fileSize,
-  }) : text = null;
-
-  _SendItem.textContent(this.text)
-    : filePath = null,
-      fileName = null,
-      fileSize = null;
-}
-
 class QuickSendSheet extends ConsumerStatefulWidget {
   final Device? preselectedDevice;
 
@@ -57,10 +23,7 @@ class QuickSendSheet extends ConsumerStatefulWidget {
   ConsumerState<QuickSendSheet> createState() => _QuickSendSheetState();
 }
 
-const int _kMaxItems = 10;
-
 class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
-  final List<_SendItem> _items = [];
   final _textController = TextEditingController();
   bool _isDragging = false;
   bool _showRecipients = false;
@@ -73,10 +36,11 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
       _selectedFingerprints.add(widget.preselectedDevice!.fingerprint);
     }
     if (widget.initialFiles != null) {
+      final draftNotifier = ref.read(quickSendDraftProvider.notifier);
       for (final file in widget.initialFiles!) {
         if (file.existsSync()) {
-          _items.add(
-            _SendItem.file(
+          draftNotifier.add(
+            QuickSendDraftItem.file(
               filePath: file.path,
               fileName: file.uri.pathSegments.last,
               fileSize: file.lengthSync(),
@@ -121,6 +85,9 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
   // ─── Step 1: Content selection ───
 
   Widget _buildContentStep(ThemeData theme, AppStrings s) {
+    final items = ref.watch(quickSendDraftProvider);
+    final isPicking = ref.watch(filePickerBusyProvider);
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -137,7 +104,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
               ),
             ),
             const Spacer(),
-            if (_items.isNotEmpty)
+            if (items.isNotEmpty)
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -148,7 +115,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  '${_items.length} ${s.itemsReady}',
+                  '${items.length} ${s.itemsReady}',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onPrimaryContainer,
                     fontWeight: FontWeight.w600,
@@ -166,15 +133,15 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
 
         // Items list (TOP) — shows what's queued for sending
         Flexible(
-          child: _items.isEmpty
+          child: items.isEmpty
               ? _buildEmptyItemsHint(theme, s)
               : ListView.separated(
                   shrinkWrap: true,
                   padding: const EdgeInsets.symmetric(vertical: 4),
-                  itemCount: _items.length,
+                  itemCount: items.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 6),
                   itemBuilder: (context, index) =>
-                      _buildItemRow(_items[index], index, theme),
+                      _buildItemRow(items[index], index, theme),
                 ),
         ),
         const SizedBox(height: 12),
@@ -185,22 +152,20 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
           onDragExited: (_) => setState(() => _isDragging = false),
           onDragDone: (details) {
             setState(() => _isDragging = false);
+            final draftNotifier = ref.read(quickSendDraftProvider.notifier);
             for (final xfile in details.files) {
-              if (_items.length >= _kMaxItems) {
+              final file = File(xfile.path);
+              if (!file.existsSync()) continue;
+              final added = draftNotifier.add(
+                QuickSendDraftItem.file(
+                  filePath: xfile.path,
+                  fileName: xfile.name,
+                  fileSize: file.lengthSync(),
+                ),
+              );
+              if (!added) {
                 _showLimitToast();
                 break;
-              }
-              final file = File(xfile.path);
-              if (file.existsSync()) {
-                setState(() {
-                  _items.add(
-                    _SendItem.file(
-                      filePath: xfile.path,
-                      fileName: xfile.name,
-                      fileSize: file.lengthSync(),
-                    ),
-                  );
-                });
               }
             }
           },
@@ -245,8 +210,17 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: IconButton(
-                    onPressed: _pickFiles,
-                    icon: const Icon(Icons.attach_file),
+                    onPressed: isPicking ? null : _pickFiles,
+                    icon: isPicking
+                        ? SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: theme.colorScheme.primary,
+                            ),
+                          )
+                        : const Icon(Icons.attach_file),
                     tooltip: s.addFile,
                     color: theme.colorScheme.primary,
                     style: IconButton.styleFrom(
@@ -261,7 +235,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: IconButton(
-                    onPressed: _pasteClipboard,
+                    onPressed: isPicking ? null : _pasteClipboard,
                     icon: const Icon(Icons.content_paste),
                     tooltip: s.paste,
                     color: theme.colorScheme.primary,
@@ -315,7 +289,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
 
         // Next button
         FilledButton.icon(
-          onPressed: _items.isEmpty
+          onPressed: items.isEmpty
               ? null
               : () => setState(() => _showRecipients = true),
           icon: const Icon(Icons.arrow_forward),
@@ -352,7 +326,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
     );
   }
 
-  Widget _buildItemRow(_SendItem item, int index, ThemeData theme) {
+  Widget _buildItemRow(QuickSendDraftItem item, int index, ThemeData theme) {
     final isText = item.isText;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -412,7 +386,8 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
               size: 18,
               color: theme.colorScheme.onSurfaceVariant,
             ),
-            onPressed: () => setState(() => _items.removeAt(index)),
+            onPressed: () =>
+                ref.read(quickSendDraftProvider.notifier).removeAt(index),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -425,10 +400,10 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
   void _addTypedText() {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
-    setState(() {
-      _items.add(_SendItem.textContent(text));
-      _textController.clear();
-    });
+    ref
+        .read(quickSendDraftProvider.notifier)
+        .add(QuickSendDraftItem.textContent(text));
+    _textController.clear();
   }
 
   // ─── Step 2: Recipient selection ───
@@ -436,6 +411,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
   Widget _buildRecipientStep(ThemeData theme, AppStrings s) {
     final devices = ref.watch(discoveryControllerProvider);
     final room = ref.watch(roomProvider);
+    final itemCount = ref.watch(quickSendDraftProvider).length;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -464,7 +440,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
-                '${_items.length} ${s.itemsReady}',
+                '$itemCount ${s.itemsReady}',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.onPrimaryContainer,
                 ),
@@ -538,40 +514,57 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
   // ─── Actions ───
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    // Captured while the sheet is still mounted: the sheet is a modal that
+    // can be dismissed mid-pick (closing then reopening creates a brand new
+    // State), but the container itself outlives it, so the pick's result
+    // still lands in the shared draft even if this widget is gone by the
+    // time the OS returns it.
+    final container = ProviderScope.containerOf(context, listen: false);
+
+    // Shared with Send and Chat: the native picker can only run one
+    // invocation at a time across the OS, so a pick already in flight on
+    // another surface must block this one instead of racing it.
+    if (container.read(filePickerBusyProvider)) return;
+    container.read(filePickerBusyProvider.notifier).state = true;
+
+    FilePickerResult? result;
+    try {
+      result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    } finally {
+      container.read(filePickerBusyProvider.notifier).state = false;
+    }
     if (result == null) return;
 
-    bool hitLimit = false;
-    setState(() {
-      for (final file in result.files) {
-        if (_items.length >= _kMaxItems) {
-          hitLimit = true;
-          break;
-        }
-        if (file.path != null) {
-          _items.add(
-            _SendItem.file(
-              filePath: file.path!,
-              fileName: file.name,
-              fileSize: file.size,
-            ),
-          );
-        }
+    final draftNotifier = container.read(quickSendDraftProvider.notifier);
+    var hitLimit = false;
+    for (final file in result.files) {
+      if (file.path == null) continue;
+      final added = draftNotifier.add(
+        QuickSendDraftItem.file(
+          filePath: file.path!,
+          fileName: file.name,
+          fileSize: file.size,
+        ),
+      );
+      if (!added) {
+        hitLimit = true;
+        break;
       }
-    });
-    if (hitLimit) _showLimitToast();
+    }
+    if (hitLimit && mounted) _showLimitToast();
   }
 
   Future<void> _pasteClipboard() async {
-    if (_items.length >= _kMaxItems) {
+    final container = ProviderScope.containerOf(context, listen: false);
+    if (container.read(quickSendDraftProvider).length >= kQuickSendMaxItems) {
       _showLimitToast();
       return;
     }
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.trim().isNotEmpty) {
-      setState(() {
-        _items.add(_SendItem.textContent(data.text!.trim()));
-      });
+      container
+          .read(quickSendDraftProvider.notifier)
+          .add(QuickSendDraftItem.textContent(data.text!.trim()));
     }
   }
 
@@ -579,7 +572,7 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('Max $_kMaxItems')));
+    ).showSnackBar(SnackBar(content: Text('Max $kQuickSendMaxItems')));
   }
 
   Future<void> _sendAll(List<Device> devices) async {
@@ -591,15 +584,18 @@ class _QuickSendSheetState extends ConsumerState<QuickSendSheet> {
     final notifier = ref.read(quickTransfersProvider.notifier);
     final messenger = ScaffoldMessenger.of(context);
     final s = AppStrings.of(context);
+    final draftItems = ref.read(quickSendDraftProvider);
 
     // Rule: a single text snippet → send as popup; otherwise everything as files.
-    final isSingleTextOnly = _items.length == 1 && _items.first.isText;
-    final singleText = isSingleTextOnly ? _items.first.text : null;
-    final items = List<_SendItem>.from(_items);
+    final isSingleTextOnly = draftItems.length == 1 && draftItems.first.isText;
+    final singleText = isSingleTextOnly ? draftItems.first.text : null;
+    final items = List<QuickSendDraftItem>.from(draftItems);
 
-    // Close the sheet immediately. The transfer keeps running in the
-    // background (driven by the provider, tracked in the transfers UI), so the
-    // popup never lingers waiting for the recipient to accept + upload.
+    // Clear the draft and close the sheet immediately. The transfer keeps
+    // running in the background (driven by the provider, tracked in the
+    // transfers UI), so the popup never lingers waiting for the recipient to
+    // accept + upload.
+    ref.read(quickSendDraftProvider.notifier).clear();
     Navigator.pop(context);
 
     final failedAliases = <String>{};

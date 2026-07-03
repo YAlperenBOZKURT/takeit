@@ -272,6 +272,18 @@ abstract class AppStrings {
   /// **'Clear'**
   String get clear;
 
+  /// No description provided for @clearAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear All'**
+  String get clearAll;
+
+  /// No description provided for @preparingFiles.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing files…'**
+  String get preparingFiles;
+
   /// No description provided for @cancel.
   ///
   /// In en, this message translates to:

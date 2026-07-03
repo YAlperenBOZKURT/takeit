@@ -1,7 +1,7 @@
 name: takeit
 description: "Local network file sharing & group chat"
 publish_to: "none"
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.11.4
@@ -35,6 +35,7 @@ dependencies:
   url_launcher: ^6.3.0
   package_info_plus: ^8.0.0
   flutter_svg: ^2.0.10
+  wakelock_plus: ^1.3.3
 
 dev_dependencies:
   flutter_test:
@@ -45,6 +46,7 @@ dev_dependencies:
   json_serializable: ^6.8.0
   riverpod_generator: ^2.4.0
   flutter_launcher_icons: ^0.14.3
+  wakelock_plus_platform_interface: ^1.5.1
 
 flutter_launcher_icons:
   image_path: "assets/logo_mark.png"

@@ -84,9 +84,39 @@ class _QuickSendPageState extends ConsumerState<QuickSendPage> {
   }
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (result == null || !mounted) return;
-    _addFiles(result.paths.whereType<String>().map(File.new));
+    // Shared with Quick Send's sheet and Chat: the native picker can only run
+    // one invocation at a time across the OS, so a pick already in flight on
+    // another surface must block this one instead of racing it.
+    if (ref.read(filePickerBusyProvider)) return;
+    ref.read(filePickerBusyProvider.notifier).state = true;
+
+    // On mobile the picker copies each selected file into the app cache
+    // before returning — for large files this is the slow part the loading
+    // state covers. That copy cannot be aborted mid-flight.
+    List<String>? paths;
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+      paths = result?.paths.whereType<String>().toList();
+    } finally {
+      ref.read(filePickerBusyProvider.notifier).state = false;
+    }
+    if (paths == null || paths.isEmpty) return;
+
+    // Page was closed while the OS was still copying: discard the result and
+    // remove the cached copies the picker made. Desktop paths point at the
+    // user's original files — never delete those.
+    if (!mounted) {
+      if (Platform.isAndroid || Platform.isIOS) {
+        for (final p in paths) {
+          try {
+            await File(p).delete();
+          } catch (_) {}
+        }
+      }
+      return;
+    }
+
+    _addFiles(paths.map(File.new));
   }
 
   /// Pastes clipboard text as a `.txt` file so it flows through the same
@@ -206,6 +236,7 @@ class _QuickSendPageState extends ConsumerState<QuickSendPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final canInteract = _status == _SendStatus.idle;
+    final isPicking = ref.watch(filePickerBusyProvider);
 
     return Scaffold(
       appBar: AppBar(title: Text(s.quickSend)),
@@ -229,11 +260,26 @@ class _QuickSendPageState extends ConsumerState<QuickSendPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                s.dropOrAddFiles,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      s.dropOrAddFiles,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  if (canInteract && _files.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: () => setState(_files.clear),
+                      icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                      label: Text(s.clearAll),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 24),
               Expanded(
@@ -249,14 +295,22 @@ class _QuickSendPageState extends ConsumerState<QuickSendPage> {
                   children: [
                     Expanded(
                       child: FilledButton.icon(
-                        onPressed: _pickFiles,
-                        icon: const Icon(Icons.add_circle_outline),
-                        label: Text(s.addFile),
+                        onPressed: isPicking ? null : _pickFiles,
+                        icon: isPicking
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.add_circle_outline),
+                        label: Text(isPicking ? s.preparingFiles : s.addFile),
                       ),
                     ),
                     const SizedBox(width: 8),
                     IconButton.filledTonal(
-                      onPressed: _pasteClipboard,
+                      onPressed: isPicking ? null : _pasteClipboard,
                       icon: const Icon(Icons.content_paste),
                       tooltip: s.paste,
                     ),
@@ -264,7 +318,9 @@ class _QuickSendPageState extends ConsumerState<QuickSendPage> {
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
-                  onPressed: _files.isEmpty ? null : _selectRecipients,
+                  onPressed: _files.isEmpty || isPicking
+                      ? null
+                      : _selectRecipients,
                   icon: const Icon(Icons.person_add_alt),
                   label: Text(s.selectRecipientsBtn),
                 ),

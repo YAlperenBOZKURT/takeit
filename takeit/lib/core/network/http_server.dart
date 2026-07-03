@@ -182,4 +182,8 @@ class AppHttpServer {
   }
 
   bool get isRunning => _server != null;
+
+  /// Actual bound port — differs from [port] when constructed with port 0
+  /// (ephemeral), which tests use to avoid collisions.
+  int? get boundPort => _server?.port;
 }

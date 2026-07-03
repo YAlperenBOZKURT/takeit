@@ -109,6 +109,12 @@ class AppStringsEn extends AppStrings {
   String get clear => 'Clear';
 
   @override
+  String get clearAll => 'Clear All';
+
+  @override
+  String get preparingFiles => 'Preparing files…';
+
+  @override
   String get cancel => 'Cancel';
 
   @override

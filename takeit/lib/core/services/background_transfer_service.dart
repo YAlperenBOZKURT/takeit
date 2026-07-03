@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 class BackgroundTransferService {
@@ -40,6 +41,20 @@ class BackgroundTransferService {
     if (!Platform.isAndroid && !Platform.isIOS) return;
 
     init();
+    // Android 13+ hides the foreground-service notification without this
+    // permission. Ask once, on the first transfer; a denial must not block
+    // the service itself.
+    if (Platform.isAndroid) {
+      try {
+        final permission =
+            await FlutterForegroundTask.checkNotificationPermission();
+        if (permission != NotificationPermission.granted) {
+          await FlutterForegroundTask.requestNotificationPermission();
+        }
+      } catch (e) {
+        debugPrint('Notification permission check failed: $e');
+      }
+    }
     await FlutterForegroundTask.startService(
       notificationTitle: 'TakeIt',
       notificationText: 'Transferring files...',

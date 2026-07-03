@@ -44,6 +44,8 @@
   "clearHistoryConfirm": "Clear history?",
   "clearHistoryMsg": "This will remove all transfer records.",
   "clear": "Clear",
+  "clearAll": "Clear All",
+  "preparingFiles": "Preparing files\u2026",
   "cancel": "Cancel",
   "filePathNotAvailable": "File path not available",
 

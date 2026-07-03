@@ -102,6 +102,12 @@ class AppStringsTr extends AppStrings {
   String get clear => 'Temizle';
 
   @override
+  String get clearAll => 'Tümünü Temizle';
+
+  @override
+  String get preparingFiles => 'Dosyalar hazırlanıyor…';
+
+  @override
   String get cancel => 'İptal';
 
   @override

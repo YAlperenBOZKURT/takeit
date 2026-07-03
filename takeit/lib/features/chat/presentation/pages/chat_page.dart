@@ -262,7 +262,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   },
                   onAttachmentTap: _pickFile,
                   onPasteTap: _shareClipboard,
-                  isSending: ref.watch(isSendingProvider),
+                  isSending:
+                      ref.watch(filePickerBusyProvider) ||
+                      ref.watch(isSendingProvider),
                 ),
               ],
             ),
@@ -386,7 +388,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    // Shared with Send and Quick Send: the native picker can only run one
+    // invocation at a time across the OS, so a pick already in flight on
+    // another surface must block this one instead of racing it.
+    if (ref.read(filePickerBusyProvider)) return;
+    ref.read(filePickerBusyProvider.notifier).state = true;
+
+    FilePickerResult? result;
+    try {
+      result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    } finally {
+      ref.read(filePickerBusyProvider.notifier).state = false;
+    }
     if (result == null || result.files.isEmpty) return;
 
     final batch = <OutgoingFile>[];

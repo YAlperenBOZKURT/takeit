@@ -30,6 +30,9 @@ venv/
 **/.flutter-plugins-dependencies
 *.log
 
+# ── Private project notes (never push to public repo) ──
+notes/
+
 # ── Local secrets / signing (never commit) ──
 **/key.properties
 **/*.keystore

@@ -34,6 +34,8 @@
   "clearHistoryConfirm": "Geçmişi temizle?",
   "clearHistoryMsg": "Tüm transfer kayıtları silinecek.",
   "clear": "Temizle",
+  "clearAll": "T\u00fcm\u00fcn\u00fc Temizle",
+  "preparingFiles": "Dosyalar haz\u0131rlan\u0131yor\u2026",
   "cancel": "İptal",
   "filePathNotAvailable": "Dosya yolu bulunamadı",
 

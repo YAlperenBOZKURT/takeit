@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/http_client.dart';
+import '../../../../core/network/http_server.dart';
 import '../../../../core/services/notification_service.dart';
+import '../../../../core/services/transfer_keep_alive.dart';
 import '../../../../core/services/transfer_queue_service.dart';
 import '../../../../core/services/window_alert_service.dart';
 import '../../../../main.dart';
@@ -30,6 +32,76 @@ final quickTransfersProvider =
       return QuickTransferNotifier(ref);
     });
 
+/// Shared lock so the native file picker — which can only run one invocation
+/// at a time across the whole OS — is never triggered concurrently from the
+/// Send tab, the Quick Send sheet and Chat. All three surfaces watch this so
+/// they show the same pending state while any one of them is picking, and a
+/// second surface can't kick off a picker call that the OS would reject.
+final filePickerBusyProvider = StateProvider<bool>((ref) => false);
+
+/// Max items the Quick Send sheet's draft can hold.
+const int kQuickSendMaxItems = 10;
+
+/// One item queued in the Quick Send sheet's draft — a file or a text
+/// snippet. Held in [quickSendDraftProvider] rather than the sheet's local
+/// State: the sheet is a modal that gets destroyed and recreated every time
+/// it's opened (via showModalBottomSheet), but a file pick started just
+/// before the user closes it should still land somewhere when it finishes,
+/// and should still be there if the sheet is reopened.
+class QuickSendDraftItem {
+  final String? filePath;
+  final String? fileName;
+  final int? fileSize;
+  final String? text;
+
+  bool get isFile => filePath != null;
+  bool get isText => text != null;
+
+  String get displaySize {
+    if (isText) return '${text!.length} chars';
+    final bytes = fileSize ?? 0;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  QuickSendDraftItem.file({
+    required this.filePath,
+    required this.fileName,
+    required this.fileSize,
+  }) : text = null;
+
+  QuickSendDraftItem.textContent(this.text)
+    : filePath = null,
+      fileName = null,
+      fileSize = null;
+}
+
+class QuickSendDraftNotifier extends StateNotifier<List<QuickSendDraftItem>> {
+  QuickSendDraftNotifier() : super([]);
+
+  /// Returns false (and adds nothing) once the draft is at [kQuickSendMaxItems].
+  bool add(QuickSendDraftItem item) {
+    if (state.length >= kQuickSendMaxItems) return false;
+    state = [...state, item];
+    return true;
+  }
+
+  void removeAt(int index) {
+    state = [for (var i = 0; i < state.length; i++) if (i != index) state[i]];
+  }
+
+  void clear() => state = [];
+}
+
+final quickSendDraftProvider =
+    StateNotifierProvider<QuickSendDraftNotifier, List<QuickSendDraftItem>>(
+      (ref) => QuickSendDraftNotifier(),
+    );
+
 class QuickTextMessage {
   final String senderId;
   final String senderAlias;
@@ -49,6 +121,9 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   final Dio _client = createHttpClient();
   final FileTransferService _service = FileTransferService();
 
+  /// Cached at construction — dispose() must not call _ref.read().
+  late final AppHttpServer _server = _ref.read(httpServerProvider);
+
   /// Accepted sessions waiting for upload (sessionId → metadata).
   final Map<String, _AcceptedQuickSession> _acceptedSessions = {};
 
@@ -64,11 +139,10 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
 
   @override
   void dispose() {
-    final server = _ref.read(httpServerProvider);
-    server.unregisterHandler('/api/takeit/v1/quick/prepare-batch');
-    server.unregisterHandler('/api/takeit/v1/quick/upload');
-    server.unregisterHandler('/api/takeit/v1/quick/text');
-    server.unregisterHandler('/api/takeit/v1/quick/cancel');
+    _server.unregisterHandler('/api/takeit/v1/quick/prepare-batch');
+    _server.unregisterHandler('/api/takeit/v1/quick/upload');
+    _server.unregisterHandler('/api/takeit/v1/quick/text');
+    _server.unregisterHandler('/api/takeit/v1/quick/cancel');
     for (final t in _progressTimers.values) {
       t?.cancel();
     }
@@ -76,14 +150,13 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   void _registerHandlers() {
-    final server = _ref.read(httpServerProvider);
-    server.registerHandler(
+    _server.registerHandler(
       '/api/takeit/v1/quick/prepare-batch',
       _handlePrepareBatch,
     );
-    server.registerHandler('/api/takeit/v1/quick/upload', _handleUpload);
-    server.registerHandler('/api/takeit/v1/quick/text', _handleText);
-    server.registerHandler('/api/takeit/v1/quick/cancel', _handleCancel);
+    _server.registerHandler('/api/takeit/v1/quick/upload', _handleUpload);
+    _server.registerHandler('/api/takeit/v1/quick/text', _handleText);
+    _server.registerHandler('/api/takeit/v1/quick/cancel', _handleCancel);
   }
 
   Future<shelf.Response> _handleCancel(shelf.Request request) async {
@@ -260,20 +333,35 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     );
     // Replace any prior (failed) attempt for this session rather than stacking.
     state = [...state.where((s) => s.sessionId != sessionId), session];
+    _syncKeepAlive();
 
     IOSink? sink;
+    var bytesReceived = 0;
+    final receiveStartedAt = DateTime.now();
     try {
       final file = File(savePath);
       sink = file.openWrite();
-      var bytesReceived = 0;
-      var lastChunkTime = DateTime.now();
+      var bytesSinceFlush = 0;
 
-      await for (final chunk in request.read()) {
-        final now = DateTime.now();
-        if (now.difference(lastChunkTime) > const Duration(seconds: 30)) {
-          throw TimeoutException('No data for 30s — sender disconnected');
-        }
+      debugPrint(
+        'Quick receiving ${accepted.fileName} (${accepted.fileSize} bytes) '
+        '→ $savePath',
+      );
 
+      // Stall detection must live on the stream itself: a check inside the
+      // loop body only runs when a chunk arrives, so it can never catch a
+      // stream that goes silent (and would kill one that recovers).
+      final body = request.read().timeout(
+        kReceiveStallTimeout,
+        onTimeout: (eventSink) => eventSink.addError(
+          TimeoutException(
+            'No data received for ${kReceiveStallTimeout.inSeconds}s — '
+            'sender disconnected',
+          ),
+        ),
+      );
+
+      await for (final chunk in body) {
         final current = state
             .where((s) => s.sessionId == sessionId)
             .firstOrNull;
@@ -283,12 +371,18 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
 
         sink.add(chunk);
         bytesReceived += chunk.length;
-        lastChunkTime = now;
+        bytesSinceFlush += chunk.length;
+        // Bound IOSink buffering: without this, a disk slower than the
+        // network lets the in-memory write buffer grow without limit.
+        if (bytesSinceFlush >= kReceiveFlushBytes) {
+          await sink.flush().timeout(kWriteStallTimeout);
+          bytesSinceFlush = 0;
+        }
         _updateProgress(sessionId, bytesReceived);
       }
 
-      await sink.flush();
-      await sink.close();
+      await sink.flush().timeout(kWriteStallTimeout);
+      await sink.close().timeout(kWriteStallTimeout);
       sink = null;
 
       // Reject truncated/over-long transfers instead of reporting success.
@@ -298,6 +392,11 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
           '${accepted.fileSize} bytes',
         );
       }
+
+      debugPrint(
+        'Quick received ${accepted.fileName}: $bytesReceived bytes in '
+        '${DateTime.now().difference(receiveStartedAt).inSeconds}s',
+      );
 
       // Fully received — release the approval so it can't be replayed.
       _acceptedSessions.remove(sessionId);
@@ -325,7 +424,11 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {
-      debugPrint('Quick upload receive error: $e');
+      debugPrint(
+        'Quick upload receive error for ${accepted.fileName} after '
+        '$bytesReceived/${accepted.fileSize} bytes '
+        '(${DateTime.now().difference(receiveStartedAt).inSeconds}s): $e',
+      );
       final isCancel = e is _QuickReceiverCancelled;
       _flushProgress(sessionId);
       _updateSession(
@@ -460,6 +563,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
         ),
       ];
     }
+    _syncKeepAlive();
     onSessionsCreated?.call(localSessionIds);
 
     List<dynamic>? results;
@@ -562,20 +666,15 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     );
 
     try {
-      final f = File(file.filePath);
-      final body = file.fileSize == 0 ? <int>[] : f.openRead();
-      await _client.post(
-        'http://${target.ip}:${target.port}/api/takeit/v1/quick/upload'
-        '?sessionId=$remoteSessionId&token=$token',
-        data: body,
+      await _service.sendFile(
+        targetIp: target.ip,
+        targetPort: target.port,
+        filePath: file.filePath,
+        sessionId: remoteSessionId,
+        token: token,
         cancelToken: cancelToken,
-        options: Options(
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': file.fileSize,
-          },
-        ),
-        onSendProgress: (sent, total) {
+        uploadPath: '/api/takeit/v1/quick/upload',
+        onProgress: (sent, total) {
           _updateProgress(localSessionId, sent);
         },
       );
@@ -760,6 +859,20 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
       for (final s in state)
         if (s.sessionId == sessionId) updater(s) else s,
     ];
+    _syncKeepAlive();
+  }
+
+  /// Report quick-send activity to the shared keep-alive (wakelock +
+  /// foreground service). Source-scoped so room activity is unaffected.
+  void _syncKeepAlive() {
+    TransferKeepAlive.setActive(
+      'quick',
+      state.any(
+        (s) =>
+            s.status == TransferStatus.inProgress ||
+            s.status == TransferStatus.pending,
+      ),
+    );
   }
 }
 
