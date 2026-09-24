@@ -38,7 +38,16 @@ class MulticastMessage {
     );
   }
 
+  /// Whether [json] is a TakeIt announcement rather than another app's
+  /// (LocalSend) on the same group. Builds from before the `protocol` field
+  /// existed omit it, so a missing value is still accepted.
+  static bool isTakeIt(Map<String, dynamic> json) {
+    final protocol = json['protocol'];
+    return protocol == null || protocol == kProtocolId;
+  }
+
   Map<String, dynamic> toJson() => {
+    'protocol': kProtocolId,
     'alias': alias,
     'deviceType': deviceType,
     'fingerprint': fingerprint,
@@ -104,12 +113,17 @@ class MulticastService {
 
   void _handleEvent(RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
-    final datagram = _socket?.receive();
-    if (datagram == null) return;
+    // One read event can cover several queued datagrams — drain them all.
+    for (var d = _socket?.receive(); d != null; d = _socket?.receive()) {
+      _handleDatagram(d);
+    }
+  }
 
+  void _handleDatagram(Datagram datagram) {
     try {
       final data = utf8.decode(datagram.data);
       final json = jsonDecode(data) as Map<String, dynamic>;
+      if (!MulticastMessage.isTakeIt(json)) return;
       final message = MulticastMessage.fromJson(json, datagram.address.address);
 
       if (message.fingerprint == _ownFingerprint) return;

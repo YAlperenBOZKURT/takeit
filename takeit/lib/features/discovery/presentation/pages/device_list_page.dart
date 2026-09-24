@@ -248,8 +248,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
       final server = ref.read(httpServerProvider);
       await server.stop();
       await server.start();
-      ref.read(discoveryControllerProvider.notifier).stopDiscovery();
-      await ref.read(discoveryControllerProvider.notifier).startDiscovery();
+      await ref.read(discoveryControllerProvider.notifier).restartDiscovery();
       if (ctx.mounted) {
         ScaffoldMessenger.of(
           ctx,

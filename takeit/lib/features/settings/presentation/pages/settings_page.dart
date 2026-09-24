@@ -213,7 +213,6 @@ class SettingsPage extends ConsumerWidget {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return;
     ref.read(nicknameProvider.notifier).setNickname(trimmed);
-    ref.read(discoveryControllerProvider.notifier).reAnnounce();
     ref.read(roomProvider.notifier).notifyAliasChange();
     Navigator.pop(context);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -224,7 +223,6 @@ class SettingsPage extends ConsumerWidget {
   void _resetToRandom(BuildContext context, WidgetRef ref) {
     ref.read(nicknameProvider.notifier).generateRandom();
     final newName = ref.read(nicknameProvider);
-    ref.read(discoveryControllerProvider.notifier).reAnnounce();
     ref.read(roomProvider.notifier).notifyAliasChange();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -238,8 +236,7 @@ class SettingsPage extends ConsumerWidget {
       final server = ref.read(httpServerProvider);
       await server.stop();
       await server.start();
-      ref.read(discoveryControllerProvider.notifier).stopDiscovery();
-      await ref.read(discoveryControllerProvider.notifier).startDiscovery();
+      await ref.read(discoveryControllerProvider.notifier).restartDiscovery();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(AppStrings.of(context).serverRestarted)),

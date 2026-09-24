@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:takeit/core/constants/network_constants.dart';
 import 'package:takeit/core/network/multicast_service.dart';
 
 void main() {
@@ -42,6 +43,54 @@ void main() {
       expect(json.containsKey('ip'), isFalse);
       expect(json['fingerprint'], 'fp-3');
       expect(json['os'], 'linux');
+    });
+
+    test('toJson tags the payload with the TakeIt protocol id', () {
+      const msg = MulticastMessage(
+        alias: 'A',
+        deviceType: 'desktop',
+        fingerprint: 'fp-4',
+        port: 53317,
+        announce: true,
+        ip: '',
+      );
+      expect(msg.toJson()['protocol'], kProtocolId);
+      expect(MulticastMessage.isTakeIt(msg.toJson()), isTrue);
+    });
+  });
+
+  group('MulticastMessage.isTakeIt', () {
+    test('rejects a LocalSend announcement on the shared group/port', () {
+      // Shape of a LocalSend v2 multicast announcement — it would otherwise
+      // parse cleanly as a TakeIt device.
+      final localSend = {
+        'alias': 'Nice Orange',
+        'version': '2.1',
+        'deviceModel': 'Samsung',
+        'deviceType': 'mobile',
+        'fingerprint': 'random-string',
+        'port': 53317,
+        'protocol': 'https',
+        'download': true,
+        'announce': true,
+      };
+      expect(MulticastMessage.isTakeIt(localSend), isFalse);
+      expect(
+        MulticastMessage.isTakeIt({...localSend, 'protocol': 'http'}),
+        isFalse,
+      );
+    });
+
+    test('accepts announcements from builds without the protocol field', () {
+      expect(
+        MulticastMessage.isTakeIt({
+          'alias': 'OldTakeIt',
+          'deviceType': 'desktop',
+          'fingerprint': 'fp-old',
+          'port': 53317,
+        }),
+        isTrue,
+      );
     });
   });
 }

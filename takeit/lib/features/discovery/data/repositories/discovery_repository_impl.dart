@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import '../../../../core/network/local_ip.dart';
 import '../../../../core/network/multicast_service.dart';
 import '../../domain/entities/device.dart';
 import '../../domain/repositories/discovery_repository.dart';
@@ -10,6 +10,10 @@ import '../datasources/multicast_datasource.dart';
 class DiscoveryRepositoryImpl implements DiscoveryRepository {
   final MulticastDatasource _datasource;
   final MulticastService _multicastService;
+
+  /// Tests turn this off to avoid probing the real LAN.
+  final bool _httpScanEnabled;
+  bool _scanning = false;
 
   final Map<String, Device> _devices = {};
   final _devicesController = StreamController<List<Device>>.broadcast();
@@ -26,7 +30,14 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
     ),
   );
 
-  DiscoveryRepositoryImpl(this._datasource, this._multicastService);
+  DiscoveryRepositoryImpl(
+    this._datasource,
+    this._multicastService, {
+    bool httpScan = true,
+  }) : _httpScanEnabled = httpScan;
+
+  /// Set while discovery is running (between start and stop).
+  bool get _running => _ownMessage != null;
 
   @override
   Stream<List<Device>> get devicesStream => _devicesController.stream;
@@ -53,20 +64,22 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
 
     // Cancel previous subscription to prevent listener leak
     await _deviceStreamSub?.cancel();
-    _deviceStreamSub = _datasource.deviceStream.listen((model) {
-      final device = model.toEntity();
-      _devices[device.fingerprint] = device;
-      _emit();
-    });
+    _deviceStreamSub = _datasource.deviceStream.listen(
+      (model) => _upsert(model.toEntity()),
+    );
 
     _datasource.startHeartbeat(_ownMessage!);
 
+    // Starting again while running must replace the timers, not stack them.
+    _cleanupTimer?.cancel();
     _cleanupTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _removeStaleDevices(),
     );
 
     // HTTP scan fallback: scan subnet every 10s
+    _httpScanTimer?.cancel();
+    if (!_httpScanEnabled) return;
     _runHttpScan(fingerprint);
     _httpScanTimer = Timer.periodic(
       const Duration(seconds: 10),
@@ -84,6 +97,7 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
     _deviceStreamSub = null;
     _datasource.stopHeartbeat();
     await _multicastService.stop();
+    _ownMessage = null;
     _devices.clear();
     _emit();
   }
@@ -96,31 +110,58 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
   }
 
   @override
-  void registerDevice(Device device) {
+  void updateAlias(String alias) {
+    final own = _ownMessage;
+    if (own == null || own.alias == alias) return;
+    _ownMessage = MulticastMessage(
+      alias: alias,
+      deviceType: own.deviceType,
+      fingerprint: own.fingerprint,
+      port: own.port,
+      announce: own.announce,
+      ip: own.ip,
+      os: own.os,
+    );
+    // The heartbeat captured the old message — restart it so every later
+    // announcement carries the new alias (it also announces right away).
+    _datasource.startHeartbeat(_ownMessage!);
+  }
+
+  @override
+  void registerDevice(Device device) => _upsert(device);
+
+  /// Records [device]. The list is only re-emitted when something visible
+  /// changed — a heartbeat that just refreshes lastSeen is not worth a
+  /// rebuild of every listener.
+  void _upsert(Device device) {
+    final previous = _devices[device.fingerprint];
     _devices[device.fingerprint] = device;
-    _emit();
+    if (previous == null ||
+        previous.copyWith(lastSeen: device.lastSeen) != device) {
+      _emit();
+    }
   }
 
   // ─── HTTP Scan Fallback ───
 
   Future<void> _runHttpScan(String ownFingerprint) async {
+    // A scan can outlast the timer interval — never run two at once.
+    if (_scanning) return;
+    _scanning = true;
     try {
-      final interfaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLoopback: false,
-      );
-
-      for (final iface in interfaces) {
-        for (final addr in iface.addresses) {
-          if (addr.isLoopback) continue;
-          final parts = addr.address.split('.');
-          if (parts.length != 4) continue;
-          final subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          await _scanSubnet(subnet, ownFingerprint);
-        }
+      // LAN adapters only (no Docker/VPN/WSL/VM subnets), each /24 once.
+      final subnets = {
+        for (final ip in await listUsableLocalIps())
+          if (ip.split('.').length == 4) ip.substring(0, ip.lastIndexOf('.')),
+      };
+      for (final subnet in subnets) {
+        if (!_running) break;
+        await _scanSubnet(subnet, ownFingerprint);
       }
     } catch (e) {
       debugPrint('HTTP scan error: $e');
+    } finally {
+      _scanning = false;
     }
   }
 
@@ -165,6 +206,8 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
         final data = response.data as Map<String, dynamic>;
         final fingerprint = data['fingerprint'] as String;
         if (fingerprint == ownFingerprint) return;
+        // A probe answered after discovery was stopped — don't resurrect it.
+        if (!_running) return;
 
         final device = Device(
           fingerprint: fingerprint,
@@ -175,8 +218,7 @@ class DiscoveryRepositoryImpl implements DiscoveryRepository {
           lastSeen: DateTime.now(),
           os: data['os'] as String? ?? '',
         );
-        _devices[device.fingerprint] = device;
-        _emit();
+        _upsert(device);
       }
     } catch (_) {
       // Expected — most IPs won't respond

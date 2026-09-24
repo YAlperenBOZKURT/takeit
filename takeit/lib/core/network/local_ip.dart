@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 /// Picks the best local IPv4 address, optionally preferring the subnet of [preferredPeerIp].
 /// Falls back to 127.0.0.1 if none found.
@@ -23,7 +24,7 @@ Future<String> resolveLocalIp({String? preferredPeerIp}) async {
 Future<List<String>> listUsableLocalIps() async {
   final candidates = await _listCandidates();
   final filtered = candidates
-      .where((c) => !_isVirtualIface(c.ifaceName) && !_isLinkLocal(c.ip))
+      .where((c) => !isVirtualInterfaceName(c.ifaceName) && !_isLinkLocal(c.ip))
       .map((c) => c.ip)
       .toSet()
       .toList();
@@ -54,7 +55,9 @@ Future<List<({String ip, String ifaceName})>> _listCandidates() async {
 }
 
 String _bestOf(List<({String ip, String ifaceName})> cs) {
-  final nonVirtual = cs.where((c) => !_isVirtualIface(c.ifaceName)).toList();
+  final nonVirtual = cs
+      .where((c) => !isVirtualInterfaceName(c.ifaceName))
+      .toList();
   final nonLinkLocal = nonVirtual.where((c) => !_isLinkLocal(c.ip)).toList();
   if (nonLinkLocal.isNotEmpty) return nonLinkLocal.first.ip;
   if (nonVirtual.isNotEmpty) return nonVirtual.first.ip;
@@ -69,15 +72,33 @@ String _subnetPrefix(String ip) {
   return '${p[0]}.${p[1]}.${p[2]}';
 }
 
-bool _isVirtualIface(String ifaceName) {
-  return ifaceName.startsWith('docker') ||
-      ifaceName.startsWith('br-') ||
-      ifaceName.startsWith('virbr') ||
-      ifaceName.startsWith('vboxnet') ||
-      ifaceName.startsWith('vmnet') ||
-      ifaceName.startsWith('zt') ||
-      ifaceName.startsWith('tailscale') ||
-      ifaceName.startsWith('wg');
+/// Whether [ifaceName] (lower-cased) belongs to a virtual, container or VPN
+/// adapter rather than the LAN. Covers Linux/macOS device names and the
+/// friendly names Windows reports (e.g. "vEthernet (WSL)").
+@visibleForTesting
+bool isVirtualInterfaceName(String ifaceName) {
+  const prefixes = [
+    'docker',
+    'br-',
+    'virbr',
+    'vboxnet',
+    'vmnet',
+    'zt',
+    'tailscale',
+    'wg',
+    'utun',
+    'vethernet',
+  ];
+  const fragments = [
+    'virtualbox',
+    'vmware',
+    'hyper-v',
+    'zerotier',
+    'wireguard',
+    'tap-windows',
+  ];
+  return prefixes.any(ifaceName.startsWith) ||
+      fragments.any(ifaceName.contains);
 }
 
 bool _isLinkLocal(String ip) => ip.startsWith('169.254.');
