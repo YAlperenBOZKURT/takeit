@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:open_filex/open_filex.dart';
@@ -15,12 +16,25 @@ class UpdateInfo {
   final String downloadUrl;
   final String changelog;
 
+  /// URL of the release's `<asset>.sha256` file, when it has one.
+  final String? checksumUrl;
+
   const UpdateInfo({
     required this.version,
     required this.currentVersion,
     required this.downloadUrl,
     required this.changelog,
+    this.checksumUrl,
   });
+}
+
+/// The downloaded installer does not match the checksum published with the
+/// release (truncated or corrupted download).
+class UpdateIntegrityException implements Exception {
+  @override
+  String toString() =>
+      'İndirilen güncelleme dosyası bozuk (sağlama toplamı eşleşmedi). '
+      'Lütfen tekrar deneyin.';
 }
 
 class UpdateService {
@@ -57,35 +71,52 @@ class UpdateService {
         ),
       );
 
-      final data = response.data as Map<String, dynamic>;
-      final tagName = data['tag_name'] as String? ?? '';
-      final version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
-
-      if (!isNewer(version, current)) return null;
-
-      final assetName = _assetName(version);
-      if (assetName.isEmpty) return null;
-
-      final assets = data['assets'] as List? ?? [];
-      String? downloadUrl;
-      for (final asset in assets) {
-        if ((asset['name'] as String?) == assetName) {
-          downloadUrl = asset['browser_download_url'] as String?;
-          break;
-        }
-      }
-      if (downloadUrl == null) return null;
-
-      return UpdateInfo(
-        version: version,
+      return parseRelease(
+        response.data as Map<String, dynamic>,
         currentVersion: current,
-        downloadUrl: downloadUrl,
-        changelog: data['body'] as String? ?? '',
+        assetNameFor: _assetName,
       );
     } catch (e) {
       debugPrint('Update check failed: $e');
       return null;
     }
+  }
+
+  /// Builds the [UpdateInfo] for this platform from a GitHub "latest
+  /// release" payload, or null when it is not newer or has no asset for us.
+  @visibleForTesting
+  static UpdateInfo? parseRelease(
+    Map<String, dynamic> data, {
+    required String currentVersion,
+    required String Function(String version) assetNameFor,
+  }) {
+    final tagName = data['tag_name'] as String? ?? '';
+    final version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
+
+    if (!isNewer(version, currentVersion)) return null;
+
+    final assetName = assetNameFor(version);
+    if (assetName.isEmpty) return null;
+
+    String? urlOf(String name) {
+      for (final asset in data['assets'] as List? ?? const []) {
+        if ((asset['name'] as String?) == name) {
+          return asset['browser_download_url'] as String?;
+        }
+      }
+      return null;
+    }
+
+    final downloadUrl = urlOf(assetName);
+    if (downloadUrl == null) return null;
+
+    return UpdateInfo(
+      version: version,
+      currentVersion: currentVersion,
+      downloadUrl: downloadUrl,
+      changelog: data['body'] as String? ?? '',
+      checksumUrl: urlOf('$assetName.sha256'),
+    );
   }
 
   static Future<String> download(
@@ -106,7 +137,42 @@ class UpdateService {
       },
     );
 
+    final checksumUrl = info.checksumUrl;
+    if (checksumUrl != null) {
+      final response = await dio.get<String>(
+        checksumUrl,
+        cancelToken: cancelToken,
+        options: Options(responseType: ResponseType.plain),
+      );
+      final expected = parseChecksumFile(response.data ?? '');
+      if (expected == null || !await fileMatchesSha256(savePath, expected)) {
+        try {
+          await File(savePath).delete();
+        } catch (_) {}
+        throw UpdateIntegrityException();
+      }
+    } else {
+      // Releases published before checksums were added have none.
+      debugPrint('Update ${info.version} has no checksum — not verified');
+    }
+
     return savePath;
+  }
+
+  /// Extracts the hex digest from a `sha256sum`-style line
+  /// (`<64 hex chars>  <file name>`), or null if there is none.
+  @visibleForTesting
+  static String? parseChecksumFile(String content) {
+    final match = RegExp(r'\b([0-9a-fA-F]{64})\b').firstMatch(content);
+    return match?.group(1)!.toLowerCase();
+  }
+
+  /// Whether the SHA-256 of the file at [path] equals [expectedHex].
+  /// Streams the file, so large installers are not loaded into memory.
+  @visibleForTesting
+  static Future<bool> fileMatchesSha256(String path, String expectedHex) async {
+    final digest = await sha256.bind(File(path).openRead()).first;
+    return digest.toString() == expectedHex.toLowerCase();
   }
 
   /// Sweeps installer files left over from a previous update attempt.
@@ -137,7 +203,9 @@ class UpdateService {
 
   static Future<void> install(String filePath) async {
     if (Platform.isWindows) {
-      await Process.start(filePath, [], runInShell: true);
+      // Launch the installer directly (no cmd.exe in between, which also
+      // mangles paths with spaces) and let it outlive this process.
+      await Process.start(filePath, [], mode: ProcessStartMode.detached);
       exit(0);
     } else if (Platform.isAndroid) {
       // OpenFilex only launches the system package installer — it doesn't
@@ -162,44 +230,62 @@ class UpdateService {
   }
 
   static Future<void> _installMacOS(String dmgPath) async {
+    const target = '/Applications/TakeIt.app';
+    const staging = '/Applications/.TakeIt.app.updating';
+    String? mountPoint;
     try {
+      // Mount at a directory we choose instead of fishing it out of `df`
+      // output (which broke on volume names with spaces).
+      mountPoint = (await Directory.systemTemp.createTemp('takeit-dmg-')).path;
       final attach = await Process.run('hdiutil', [
         'attach',
         dmgPath,
         '-nobrowse',
         '-quiet',
+        '-mountpoint',
+        mountPoint,
       ]);
       if (attach.exitCode != 0) {
+        mountPoint = null;
         await Process.run('open', [dmgPath]);
         return;
       }
 
-      // Find mount point
-      final df = await Process.run('df', []);
-      String? mountPoint;
-      for (final line in (df.stdout as String).split('\n')) {
-        if (line.contains('TakeIt')) {
-          mountPoint = line.split(' ').last.trim();
-          break;
-        }
-      }
-
-      if (mountPoint == null) {
+      final bundle = Directory(mountPoint)
+          .listSync()
+          .whereType<Directory>()
+          .where((d) => d.path.toLowerCase().endsWith('.app'))
+          .firstOrNull;
+      if (bundle == null) {
         await Process.run('open', [dmgPath]);
         return;
       }
 
-      await Process.run('ditto', [
-        '$mountPoint/TakeIt.app',
-        '/Applications/TakeIt.app',
-      ]);
+      // Copy next to the old app first and only swap once the copy
+      // succeeded, so a failed copy never leaves a half-written app.
+      await Process.run('rm', ['-rf', staging]);
+      final copy = await Process.run('ditto', [bundle.path, staging]);
+      if (copy.exitCode != 0) {
+        debugPrint('macOS update copy failed: ${copy.stderr}');
+        await Process.run('rm', ['-rf', staging]);
+        await Process.run('open', [dmgPath]);
+        return;
+      }
+      await Process.run('rm', ['-rf', target]);
+      await Directory(staging).rename(target);
 
+      // exit() skips `finally`, so detach before relaunching.
       await Process.run('hdiutil', ['detach', mountPoint, '-quiet']);
-      await Process.start('/Applications/TakeIt.app/Contents/MacOS/takeit', []);
+      mountPoint = null;
+      await Process.run('open', ['-n', target]);
       exit(0);
     } catch (e) {
       debugPrint('macOS install error: $e');
       await Process.run('open', [dmgPath]);
+    } finally {
+      if (mountPoint != null) {
+        await Process.run('hdiutil', ['detach', mountPoint, '-quiet']);
+      }
     }
   }
 
@@ -225,6 +311,8 @@ class UpdateService {
   }
 
   static List<int> _parse(String v) {
-    return v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    // Ignore pre-release/build suffixes ("1.2.0-beta.1", "1.2.0+7").
+    final core = v.split(RegExp(r'[-+]')).first;
+    return core.split('.').map((s) => int.tryParse(s) ?? 0).toList();
   }
 }
