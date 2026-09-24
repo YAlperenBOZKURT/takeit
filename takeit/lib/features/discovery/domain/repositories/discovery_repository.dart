@@ -11,5 +11,8 @@ abstract class DiscoveryRepository {
   });
   Future<void> stopDiscovery();
   void reAnnounce();
+
+  /// Switch announcements to [alias] (nickname changed while running).
+  void updateAlias(String alias);
   void registerDevice(Device device);
 }

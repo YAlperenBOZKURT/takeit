@@ -101,8 +101,7 @@ class _TakeItAppState extends ConsumerState<TakeItApp>
     try {
       if (longBackground) {
         // UDP sockets may have been closed by the OS — full restart.
-        _discovery.stopDiscovery();
-        await _discovery.startDiscovery();
+        await _discovery.restartDiscovery();
       } else {
         _discovery.reAnnounce();
       }
@@ -121,7 +120,7 @@ class _TakeItAppState extends ConsumerState<TakeItApp>
 
   Future<void> _cleanup() async {
     try {
-      _discovery.stopDiscovery();
+      await _discovery.stopDiscovery();
     } catch (e) {
       debugPrint('Discovery stop failed: $e');
     }

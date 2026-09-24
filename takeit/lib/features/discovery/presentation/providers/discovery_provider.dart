@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/multicast_service.dart';
@@ -52,8 +53,29 @@ class DiscoveryController extends StateNotifier<List<Device>> {
   final Ref _ref;
   StreamSubscription<List<Device>>? _subscription;
 
+  /// Start/stop run strictly one after another. Overlapping them (a stop
+  /// not awaited before the next start) let the stop close the multicast
+  /// socket that the start had just decided to reuse, leaving discovery
+  /// silently dead.
+  Future<void> _lifecycle = Future.value();
+
   DiscoveryController(this._ref) : super([]) {
     _registerInfoHandler();
+    // The heartbeat keeps broadcasting the alias captured at start — push
+    // nickname changes into it.
+    _ref.listen<String>(nicknameProvider, (prev, next) {
+      if (prev != next) {
+        _ref.read(discoveryRepositoryProvider).updateAlias(next);
+      }
+    });
+  }
+
+  Future<void> _serialized(Future<void> Function() op) {
+    final next = _lifecycle.then((_) => op());
+    _lifecycle = next.catchError((Object e) {
+      debugPrint('Discovery start/stop failed: $e');
+    });
+    return next;
   }
 
   void _registerInfoHandler() {
@@ -79,7 +101,17 @@ class DiscoveryController extends StateNotifier<List<Device>> {
     );
   }
 
-  Future<void> startDiscovery() async {
+  Future<void> startDiscovery() => _serialized(_start);
+
+  Future<void> stopDiscovery() => _serialized(_stop);
+
+  /// Stop then start, as one step (e.g. after a long background).
+  Future<void> restartDiscovery() => _serialized(() async {
+    await _stop();
+    await _start();
+  });
+
+  Future<void> _start() async {
     final repo = _ref.read(discoveryRepositoryProvider);
     final alias = _ref.read(nicknameProvider);
     final fingerprint = _ref.read(fingerprintProvider);
@@ -94,16 +126,17 @@ class DiscoveryController extends StateNotifier<List<Device>> {
       os: os,
     );
 
+    await _subscription?.cancel();
     _subscription = repo.devicesStream.listen((devices) {
       state = devices;
     });
   }
 
-  Future<void> stopDiscovery() async {
-    _subscription?.cancel();
+  Future<void> _stop() async {
+    await _subscription?.cancel();
     _subscription = null;
     await _ref.read(discoveryRepositoryProvider).stopDiscovery();
-    state = [];
+    if (mounted) state = [];
   }
 
   void reAnnounce() {
