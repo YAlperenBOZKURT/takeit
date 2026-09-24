@@ -25,6 +25,10 @@ final roomProvider = StateNotifierProvider<RoomNotifier, Room?>((ref) {
   return RoomNotifier(ref);
 });
 
+/// How long a room invite stays valid — on the host (the pending member is
+/// auto-declined) and on the invitee (the invite is dropped from the queue).
+const kInviteTimeout = Duration(seconds: 120);
+
 /// Queue of pending room invites — multiple can arrive concurrently.
 /// Device list listens and shows the first one; after it's resolved, the next pops up.
 final roomInvitesProvider = StateProvider<List<Map<String, dynamic>>>(
@@ -53,13 +57,28 @@ class _PendingRoom {
 class RoomNotifier extends StateNotifier<Room?> {
   final Ref _ref;
   final Dio _client = createHttpClient();
+  final Duration _connectionCheckInterval;
+  final Duration _inviteTimeout;
   Timer? _connectionCheckTimer;
   final Map<String, int> _failedPings =
       {}; // fingerprint → consecutive failures
   Timer? _syncDebounce; // debounce for _broadcastMemberSync
   bool _isCheckingConnections = false;
 
-  RoomNotifier(this._ref) : super(null) {
+  /// Stamped on every roster sync the host sends, so members can drop a
+  /// sync that arrives after a newer one.
+  int _syncSeq = 0;
+
+  /// Highest roster sync sequence applied, per room (member side).
+  final Map<String, int> _lastSyncSeq = {};
+
+  RoomNotifier(
+    this._ref, {
+    Duration connectionCheckInterval = const Duration(seconds: 5),
+    Duration inviteTimeout = kInviteTimeout,
+  }) : _connectionCheckInterval = connectionCheckInterval,
+       _inviteTimeout = inviteTimeout,
+       super(null) {
     _registerInviteHandler();
     _startConnectionMonitor();
     _watchDeviceDisappearance();
@@ -72,12 +91,24 @@ class RoomNotifier extends StateNotifier<Room?> {
     super.dispose();
   }
 
+  /// Runs for the notifier's whole lifetime: it idles while there is no
+  /// room and picks up the next one on its own.
   void _startConnectionMonitor() {
     _connectionCheckTimer = Timer.periodic(
-      const Duration(seconds: 5),
+      _connectionCheckInterval,
       (_) => _checkConnections(),
     );
   }
+
+  /// Ends the current room locally.
+  void _dissolveRoom() {
+    _failedPings.clear();
+    _lastSyncSeq.clear();
+    state = null;
+  }
+
+  /// This device's actual HTTP port (tests bind an ephemeral one).
+  int get _ownPort => _ref.read(httpServerProvider).boundPort ?? kDefaultPort;
 
   /// Force an immediate connection check (e.g., on app resume).
   void checkConnectionsNow() => _checkConnections();
@@ -125,6 +156,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<void> _pingMember(RoomMember member) async {
+    final roomId = state?.id;
     try {
       final response = await _client.get(
         'http://${member.ip}:${member.port}/api/takeit/v1/ping',
@@ -133,6 +165,10 @@ class RoomNotifier extends StateNotifier<Room?> {
           sendTimeout: const Duration(seconds: 2),
         ),
       );
+
+      // The room may have ended or been replaced while the ping was in
+      // flight — its result says nothing about the current room.
+      if (!mounted || state?.id != roomId) return;
 
       if (response.statusCode == 200) {
         // Ghost-member check: peer is reachable but has no active room (they
@@ -160,6 +196,7 @@ class RoomNotifier extends StateNotifier<Room?> {
       }
     } catch (_) {}
 
+    if (!mounted || state?.id != roomId) return;
     final failures = (_failedPings[member.fingerprint] ?? 0) + 1;
     _failedPings[member.fingerprint] = failures;
 
@@ -170,10 +207,7 @@ class RoomNotifier extends StateNotifier<Room?> {
 
       if (!isHost && member.fingerprint == state?.hostFingerprint) {
         debugPrint('Host went offline — dissolving room');
-        _connectionCheckTimer?.cancel();
-        _failedPings.clear();
-        state = null;
-        _startConnectionMonitor();
+        _dissolveRoom();
         return;
       }
 
@@ -192,10 +226,7 @@ class RoomNotifier extends StateNotifier<Room?> {
 
     if (!isHost && member.fingerprint == state!.hostFingerprint) {
       debugPrint('Host is ghost — dissolving room');
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
-      _startConnectionMonitor();
+      _dissolveRoom();
       return;
     }
 
@@ -210,11 +241,7 @@ class RoomNotifier extends StateNotifier<Room?> {
       _scheduleMemberSync();
     }
 
-    if (updated.isEmpty) {
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
-    }
+    if (updated.isEmpty) _dissolveRoom();
   }
 
   /// Debounced member sync — collects multiple status changes in 1 second
@@ -309,9 +336,16 @@ class RoomNotifier extends StateNotifier<Room?> {
 
   Future<shelf.Response> _handleInvite(shelf.Request request) async {
     final body = jsonDecode(await request.readAsString());
+    if (body is! Map<String, dynamic> ||
+        body['roomId'] is! String ||
+        body['hostFingerprint'] is! String ||
+        body['hostAlias'] is! String) {
+      return shelf.Response.badRequest(body: 'Missing required fields');
+    }
+    final invite = body;
     // Use X-Real-IP injected by middleware, fallback to payload
-    body['hostIp'] = request.headers['x-real-ip'] ?? body['hostIp'] ?? '';
-    final invite = body as Map<String, dynamic>;
+    invite['hostIp'] = remoteIpOf(request) ?? invite['hostIp'] ?? '';
+    if (invite['hostPort'] is! int) invite['hostPort'] = kDefaultPort;
 
     // Dedup by hostFingerprint — new invite from same person replaces the old one (LIFO).
     final hostFingerprint = invite['hostFingerprint'] as String?;
@@ -321,7 +355,13 @@ class RoomNotifier extends StateNotifier<Room?> {
         .toList();
     _ref.read(roomInvitesProvider.notifier).state = [...filtered, invite];
 
-    final hostAlias = body['hostAlias'] as String? ?? 'Someone';
+    // The host stops honouring this invite after kInviteTimeout, so drop it
+    // here too — accepting it later would join a room that no longer exists.
+    Timer(_inviteTimeout, () {
+      if (mounted) _removeInviteFromQueue(invite);
+    });
+
+    final hostAlias = invite['hostAlias'] as String;
     NotificationService.notifyRoomInvite(hostAlias);
     if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
       WindowAlertService.flashWindow();
@@ -365,7 +405,7 @@ class RoomNotifier extends StateNotifier<Room?> {
     final fingerprint = _ref.read(fingerprintProvider);
     final alias = _ref.read(nicknameProvider);
     final roomId = const Uuid().v4();
-    const hostPort = kDefaultPort;
+    final hostPort = _ownPort;
     final preferredPeerIp = selectedDevices.isNotEmpty
         ? selectedDevices.first.ip
         : null;
@@ -412,7 +452,7 @@ class RoomNotifier extends StateNotifier<Room?> {
     final fingerprint = _ref.read(fingerprintProvider);
     final alias = _ref.read(nicknameProvider);
     final roomId = const Uuid().v4();
-    const hostPort = kDefaultPort;
+    final hostPort = _ownPort;
     final hostIp = await _getLocalIp(preferredPeerIp: trimmed);
 
     final placeholder = RoomMember(
@@ -497,13 +537,13 @@ class RoomNotifier extends StateNotifier<Room?> {
         },
       );
 
-      // Schedule timeout — if member is still pending after 120s, auto-decline.
-      Timer(const Duration(seconds: 120), () {
-        _expireInviteIfPending(roomId, member);
+      // Schedule timeout — if member is still pending, auto-decline.
+      Timer(_inviteTimeout, () {
+        if (mounted) _expireInviteIfPending(roomId, member);
       });
     } catch (e) {
       debugPrint('Failed to invite ${member.alias}: $e');
-      _handleInviteFailure(member);
+      if (mounted) _handleInviteFailure(member);
     }
   }
 
@@ -538,7 +578,7 @@ class RoomNotifier extends StateNotifier<Room?> {
         orElse: () => member,
       );
       if (current.status == MemberStatus.pending) {
-        debugPrint('Invite to ${member.alias} timed out after 120s');
+        debugPrint('Invite to ${member.alias} timed out');
         _updateMemberStatus(member.fingerprint, MemberStatus.declined);
       }
       return;
@@ -551,7 +591,7 @@ class RoomNotifier extends StateNotifier<Room?> {
             m.status == MemberStatus.pending,
       );
       if (isStillPending) {
-        debugPrint('Pending invite to ${member.alias} timed out after 120s');
+        debugPrint('Pending invite to ${member.alias} timed out');
         _handleInviteFailure(member);
       }
     }
@@ -567,6 +607,29 @@ class RoomNotifier extends StateNotifier<Room?> {
     final memberIp = request.headers['x-real-ip'] ?? '';
     final memberPort = body['port'] as int? ?? kDefaultPort;
     final memberDeviceType = body['deviceType'] as String? ?? 'unknown';
+
+    // Only honour accepts for the room we are hosting right now — a late
+    // accept for an expired invite must not join (or create) another room.
+    if (!isHost || body['roomId'] != _hostedRoomId) {
+      return shelf.Response.notFound(
+        jsonEncode({'error': 'room_not_found'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    final invited = state?.members ?? _ref.read(pendingRoomProvider)!.members;
+    final isInvited = invited.any(
+      (m) =>
+          m.fingerprint == fingerprint ||
+          (m.fingerprint.startsWith('manual:') &&
+              memberIp.isNotEmpty &&
+              m.ip == memberIp),
+    );
+    if (!isInvited) {
+      return shelf.Response.forbidden(
+        jsonEncode({'error': 'not_invited'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
 
     if (state != null) {
       // Manual invite: pending member key is `manual:$ip`, replace it now
@@ -631,6 +694,13 @@ class RoomNotifier extends StateNotifier<Room?> {
     );
   }
 
+  /// Id of the room this device hosts — active or still waiting for its
+  /// first accept — or null.
+  String? get _hostedRoomId {
+    if (!isHost) return null;
+    return state?.id ?? _ref.read(pendingRoomProvider)?.roomId;
+  }
+
   Future<shelf.Response> _handleLeave(shelf.Request request) async {
     final body = jsonDecode(await request.readAsString());
     final fingerprint = body['fingerprint'] as String?;
@@ -645,9 +715,7 @@ class RoomNotifier extends StateNotifier<Room?> {
     }
 
     if (fingerprint == state!.hostFingerprint) {
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
+      _dissolveRoom();
     } else {
       // Remove the member (they intentionally left, not just disconnected)
       _updateMemberStatus(fingerprint, MemberStatus.declined);
@@ -693,13 +761,14 @@ class RoomNotifier extends StateNotifier<Room?> {
     final alias = _ref.read(nicknameProvider);
     final deviceType = _ref.read(deviceTypeProvider);
     final hostIp = await _resolveHostIpForSync();
+    if (!mounted || state == null) return;
 
     final allMembers = <Map<String, dynamic>>[
       {
         'fingerprint': fingerprint,
         'alias': alias,
         'ip': hostIp,
-        'port': kDefaultPort,
+        'port': _ownPort,
         'deviceType': deviceType,
         'isHost': true,
       },
@@ -716,7 +785,11 @@ class RoomNotifier extends StateNotifier<Room?> {
       ),
     ];
 
-    final payload = {'roomId': state!.id, 'members': allMembers};
+    final payload = {
+      'roomId': state!.id,
+      'seq': ++_syncSeq,
+      'members': allMembers,
+    };
 
     for (final member in state!.members) {
       if (member.status != MemberStatus.accepted) continue;
@@ -756,6 +829,23 @@ class RoomNotifier extends StateNotifier<Room?> {
       return shelf.Response.notFound('');
     }
 
+    // Syncs are sent one member at a time, so an older roster can overtake a
+    // newer one — never let it roll the member list back.
+    final seq = body['seq'] as int?;
+    if (seq != null) {
+      if (seq <= (_lastSyncSeq[roomId] ?? -1)) {
+        return shelf.Response.ok(
+          jsonEncode({'status': 'stale'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+      _lastSyncSeq[roomId] = seq;
+    }
+
+    // The host's self-reported IP is a guess (it can pick a VPN or virtual
+    // adapter); the address this sync arrived from is reachable by definition.
+    final senderIp = remoteIpOf(request);
+
     final myFingerprint = _ref.read(fingerprintProvider);
 
     // Rebuild members list: everyone except myself
@@ -765,7 +855,9 @@ class RoomNotifier extends StateNotifier<Room?> {
       if (fp == null || fp == myFingerprint) continue;
 
       final alias = m['alias'] as String? ?? '';
-      final ip = m['ip'] as String? ?? '';
+      final ip = m['isHost'] == true && senderIp != null
+          ? senderIp
+          : m['ip'] as String? ?? '';
       final port = m['port'] as int? ?? kDefaultPort;
       final status = m['status'] as String?;
       updatedMembers.add(
@@ -795,9 +887,7 @@ class RoomNotifier extends StateNotifier<Room?> {
     );
     if (!hasAccepted && !hasPending) {
       debugPrint('Sync shows all others gone — dissolving room');
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
+      _dissolveRoom();
     }
 
     return shelf.Response.ok(
@@ -834,35 +924,13 @@ class RoomNotifier extends StateNotifier<Room?> {
 
     state = state!.copyWith(members: updated);
 
-    // Dissolve room if no members remain at all, or all pending have resolved and none accepted
-    if (updated.isEmpty) {
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
-      return;
-    }
+    // Dissolve when nobody else is left to talk to: every other member has
+    // left, declined or gone offline, and no invite is still pending.
     final hasAccepted = updated.any((m) => m.status == MemberStatus.accepted);
     final hasPending = updated.any((m) => m.status == MemberStatus.pending);
     if (!hasAccepted && !hasPending) {
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
-      return;
-    }
-
-    // Auto-dissolve when I'm the only active participant left
-    // (all other members are offline — nobody to talk to).
-    if (!hasAccepted && !hasPending) return; // already handled above
-    final onlineCount = updated
-        .where((m) => m.status == MemberStatus.accepted)
-        .length;
-    // onlineCount counts OTHER members (host not in list for host, other members for non-host).
-    // If no other member is accepted (all offline/pending), dissolve.
-    if (onlineCount == 0 && !hasPending) {
-      debugPrint('All other members offline — dissolving room');
-      _connectionCheckTimer?.cancel();
-      _failedPings.clear();
-      state = null;
+      debugPrint('No other active members — dissolving room');
+      _dissolveRoom();
     }
   }
 
@@ -907,12 +975,22 @@ class RoomNotifier extends StateNotifier<Room?> {
           'roomId': roomId,
           'fingerprint': fingerprint,
           'alias': alias,
-          'port': kDefaultPort,
+          'port': _ownPort,
           'deviceType': deviceType,
         },
       );
-    } catch (e) {
-      debugPrint('Failed to send accept: $e');
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final status = e.response?.statusCode;
+      // The host answered but refused (invite expired / room gone) — don't
+      // sit in a room that only exists on this side. Plain network errors
+      // are left to the connection monitor.
+      if (status != null && status >= 400 && status < 500) {
+        debugPrint('Host rejected accept ($status) — leaving room');
+        if (state?.id == roomId) _dissolveRoom();
+      } else {
+        debugPrint('Failed to send accept: $e');
+      }
     }
   }
 
@@ -943,6 +1021,14 @@ class RoomNotifier extends StateNotifier<Room?> {
     final fingerprint = body['fingerprint'] as String?;
     if (fingerprint == null) {
       return shelf.Response.badRequest(body: 'Missing fingerprint');
+    }
+    // A decline for an older invite must not remove the same device from
+    // the room we host now.
+    if (body['roomId'] != _hostedRoomId) {
+      return shelf.Response.notFound(
+        jsonEncode({'error': 'room_not_found'}),
+        headers: {'Content-Type': 'application/json'},
+      );
     }
 
     if (state != null) {
@@ -981,9 +1067,6 @@ class RoomNotifier extends StateNotifier<Room?> {
     final room = state;
     final fingerprint = _ref.read(fingerprintProvider);
 
-    _connectionCheckTimer?.cancel();
-    _failedPings.clear();
-
     if (room != null) {
       if (isHost) {
         final notifications = <Future<void>>[];
@@ -1019,11 +1102,9 @@ class RoomNotifier extends StateNotifier<Room?> {
       }
     }
 
+    if (!mounted) return;
     _ref.read(pendingRoomProvider.notifier).state = null;
-    state = null;
-
-    // Restart connection monitor for future rooms
-    _startConnectionMonitor();
+    _dissolveRoom();
   }
 
   int get onlineMemberCount {
