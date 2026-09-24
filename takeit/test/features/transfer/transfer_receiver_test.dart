@@ -45,6 +45,9 @@ void main() {
 
   const senderId = 'test-sender-fp';
 
+  /// Short idle expiry so the batch-expiry tests run in well under a second.
+  const acceptedIdleTimeout = Duration(milliseconds: 400);
+
   setUp(() async {
     downloadDir = await Directory.systemTemp.createTemp('takeit_recv_test');
     server = AppHttpServer(port: 0);
@@ -59,6 +62,10 @@ void main() {
           (ref) => _FixedDownloadPath(downloadDir.path),
         ),
         historyProvider.overrideWith((ref) => _NoopHistory()),
+        transferProvider.overrideWith(
+          (ref) =>
+              TransferNotifier(ref, acceptedIdleTimeout: acceptedIdleTimeout),
+        ),
       ],
     );
 
@@ -76,8 +83,9 @@ void main() {
     } catch (_) {}
   });
 
-  /// Runs prepare-batch for one file and returns its sessionId and token.
-  Future<(String, String)> prepare(String fileName, int fileSize) async {
+  /// Runs prepare-batch for several files in one batch and returns each
+  /// file's sessionId and token, in order.
+  Future<List<(String, String)>> prepareBatch(List<(String, int)> files) async {
     final client = HttpClient();
     final req = await client.postUrl(
       Uri.parse('http://127.0.0.1:$port/api/takeit/v1/transfer/prepare-batch'),
@@ -88,7 +96,8 @@ void main() {
         'senderId': senderId,
         'senderAlias': 'Test Sender',
         'files': [
-          {'fileName': fileName, 'fileSize': fileSize},
+          for (final (name, size) in files)
+            {'fileName': name, 'fileSize': size},
         ],
       }),
     );
@@ -98,14 +107,17 @@ void main() {
             as Map<String, dynamic>;
     client.close();
 
-    final entry = (body['files'] as List).first as Map<String, dynamic>;
-    expect(
-      entry['accepted'],
-      isTrue,
-      reason: 'trusted sender must auto-accept',
-    );
-    return (entry['sessionId'] as String, entry['token'] as String);
+    final sessions = <(String, String)>[];
+    for (final e in (body['files'] as List).cast<Map<String, dynamic>>()) {
+      expect(e['accepted'], isTrue, reason: 'trusted sender must auto-accept');
+      sessions.add((e['sessionId'] as String, e['token'] as String));
+    }
+    return sessions;
   }
+
+  /// Runs prepare-batch for one file and returns its sessionId and token.
+  Future<(String, String)> prepare(String fileName, int fileSize) async =>
+      (await prepareBatch([(fileName, fileSize)])).single;
 
   /// Uploads [bytes] for the given session and returns the HTTP status code.
   Future<int> upload(String sessionId, String token, List<int> bytes) async {
@@ -119,6 +131,37 @@ void main() {
     req.headers.contentType = ContentType.binary;
     req.contentLength = bytes.length;
     req.add(bytes);
+    final res = await req.close();
+    await res.drain<void>();
+    final status = res.statusCode;
+    client.close();
+    return status;
+  }
+
+  /// Uploads [bytes] in [chunks] pieces spread over [duration], like a
+  /// large file on a real network, and returns the HTTP status code.
+  Future<int> uploadSlowly(
+    String sessionId,
+    String token,
+    List<int> bytes, {
+    required Duration duration,
+    int chunks = 8,
+  }) async {
+    final client = HttpClient();
+    final req = await client.postUrl(
+      Uri.parse(
+        'http://127.0.0.1:$port/api/takeit/v1/transfer/upload'
+        '?sessionId=$sessionId&token=$token',
+      ),
+    );
+    req.headers.contentType = ContentType.binary;
+    req.contentLength = bytes.length;
+    final chunkSize = (bytes.length / chunks).ceil();
+    for (var i = 0; i < bytes.length; i += chunkSize) {
+      req.add(bytes.sublist(i, (i + chunkSize).clamp(0, bytes.length)));
+      await req.flush();
+      await Future<void>.delayed(duration ~/ chunks);
+    }
     final res = await req.close();
     await res.drain<void>();
     final status = res.statusCode;
@@ -173,4 +216,41 @@ void main() {
     expect(status, 403);
     expect(downloadDir.listSync(), isEmpty);
   });
+
+  test('later files of a batch stay approved while an earlier file streams '
+      'for longer than the idle timeout', () async {
+    final first = List<int>.generate(64 * 1024, (i) => i % 251);
+    final second = List<int>.generate(1024, (i) => i % 13);
+    final sessions = await prepareBatch([
+      ('first.bin', first.length),
+      ('second.bin', second.length),
+    ]);
+
+    // Sequential, as the sender does it: the first upload alone outlasts
+    // the idle timeout.
+    final firstStatus = await uploadSlowly(
+      sessions[0].$1,
+      sessions[0].$2,
+      first,
+      duration: acceptedIdleTimeout * 2,
+    );
+    final secondStatus = await upload(sessions[1].$1, sessions[1].$2, second);
+
+    expect(firstStatus, 200);
+    expect(secondStatus, 200, reason: 'second file must not be rejected');
+    expect(File('${downloadDir.path}/second.bin').lengthSync(), second.length);
+  });
+
+  test(
+    'approved files are dropped once the batch sits idle too long',
+    () async {
+      final (sessionId, token) = await prepare('never_sent.bin', 16);
+
+      await Future<void>.delayed(acceptedIdleTimeout * 2);
+      final status = await upload(sessionId, token, List.filled(16, 1));
+
+      expect(status, 403);
+      expect(downloadDir.listSync(), isEmpty);
+    },
+  );
 }
