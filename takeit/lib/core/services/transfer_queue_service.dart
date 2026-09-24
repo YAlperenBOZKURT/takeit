@@ -3,6 +3,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../features/discovery/presentation/providers/device_actions_provider.dart';
 
+/// How long an incoming batch waits for the user's approval before it is
+/// auto-declined.
+const kApprovalTimeout = Duration(seconds: 120);
+
+/// How long a sender waits for the prepare-batch response. The receiver holds
+/// that request open while the approval dialog is up, so this must outlast
+/// [kApprovalTimeout] — otherwise an approval given late in the window reaches
+/// a sender that has already given up.
+const kPrepareResponseTimeout = Duration(seconds: 125);
+
 /// Source of a transfer request (room chat or quick send).
 enum TransferSource { room, quick }
 
@@ -37,6 +47,9 @@ class TransferBatch {
   final Completer<List<bool>> approvalCompleter;
   final DateTime enqueuedAt;
 
+  /// Auto-decline deadline, measured from [enqueuedAt].
+  final Duration approvalTimeout;
+
   TransferBatch({
     required this.batchId,
     required this.senderId,
@@ -45,10 +58,10 @@ class TransferBatch {
     required this.source,
     required this.files,
     required this.approvalCompleter,
+    this.approvalTimeout = kApprovalTimeout,
   }) : enqueuedAt = DateTime.now();
 
-  bool get isExpired =>
-      DateTime.now().difference(enqueuedAt) > const Duration(seconds: 120);
+  bool get isExpired => DateTime.now().difference(enqueuedAt) > approvalTimeout;
 }
 
 /// The batch currently shown in the approval dialog.
@@ -111,14 +124,19 @@ class TransferQueueService {
     _processApprovalQueue();
 
     // Timeout — auto-decline if user doesn't respond
-    final timer = Timer(const Duration(seconds: 120), () {
+    final timer = Timer(batch.approvalTimeout, () {
       if (!batch.approvalCompleter.isCompleted) {
         debugPrint('Batch ${batch.batchId} timed out waiting for approval');
         batch.approvalCompleter.complete(
           List.filled(batch.files.length, false),
         );
         _pendingQueue.removeWhere((q) => q.batchId == batch.batchId);
-        _showingApproval = false;
+        // Only release the dialog if it is showing THIS batch — a queued
+        // batch expiring must not replace the one the user is looking at.
+        if (identical(_ref.read(currentApprovalProvider), batch)) {
+          _ref.read(currentApprovalProvider.notifier).state = null;
+          _showingApproval = false;
+        }
         _updateDepthCount();
         _processApprovalQueue();
       }

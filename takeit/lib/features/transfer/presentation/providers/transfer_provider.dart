@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/http_client.dart';
 import '../../../../core/network/http_server.dart';
+import '../../../../core/services/batch_idle_expiry.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/transfer_keep_alive.dart';
 import '../../../../core/services/transfer_queue_service.dart';
@@ -63,8 +64,26 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   final Map<String, Timer?> _progressTimers = {};
   final Map<String, int> _pendingBytes = {};
 
-  TransferNotifier(this._ref) : super([]) {
+  /// Drops approved sessions whose batch sat idle without uploading them.
+  late final BatchIdleExpiry _acceptedExpiry;
+
+  TransferNotifier(
+    this._ref, {
+    Duration acceptedIdleTimeout = kAcceptedBatchIdleTimeout,
+  }) : super([]) {
+    _acceptedExpiry = BatchIdleExpiry(
+      idleTimeout: acceptedIdleTimeout,
+      onExpire: _expireAcceptedBatch,
+    );
     _registerHandlers();
+  }
+
+  void _expireAcceptedBatch(String batchKey) {
+    _acceptedSessions.removeWhere((sid, s) {
+      if (s.batchKey != batchKey) return false;
+      debugPrint('Accepted session $sid expired without upload');
+      return true;
+    });
   }
 
   @override
@@ -76,6 +95,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
     for (final t in _progressTimers.values) {
       t?.cancel();
     }
+    _acceptedExpiry.dispose();
     super.dispose();
   }
 
@@ -169,6 +189,11 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
 
     final results = await queue.enqueueBatch(batch);
 
+    // Receiver-local key: the sender-supplied batchId is not trusted to be
+    // unique across senders.
+    final batchKey = const Uuid().v4();
+    var anyAccepted = false;
+
     // Register accepted sessions for upload handler
     final responseFiles = <Map<String, dynamic>>[];
     for (var i = 0; i < batchedFiles.length; i++) {
@@ -185,20 +210,16 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
           senderId: senderId,
           senderAlias: senderAlias,
           fileMimeType: bf.fileMimeType,
+          batchKey: batchKey,
         );
         entry['sessionId'] = bf.sessionId;
         entry['fileId'] = bf.fileId;
         entry['token'] = bf.token;
-
-        final sid = bf.sessionId!;
-        Timer(const Duration(seconds: 120), () {
-          if (_acceptedSessions.remove(sid) != null) {
-            debugPrint('Accepted session $sid expired without upload');
-          }
-        });
+        anyAccepted = true;
       }
       responseFiles.add(entry);
     }
+    if (anyAccepted) _acceptedExpiry.arm(batchKey);
 
     return shelf.Response.ok(
       jsonEncode({'batchId': batchId, 'files': responseFiles}),
@@ -221,6 +242,26 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
       return shelf.Response.forbidden('Invalid session or token');
     }
 
+    // Pause the batch's idle expiry while this upload runs, so files queued
+    // behind a long one keep their approval.
+    final batchKey = accepted.batchKey;
+    _acceptedExpiry.uploadStarted(batchKey);
+    try {
+      return await _receiveAccepted(request, sessionId, token, accepted);
+    } finally {
+      _acceptedExpiry.uploadEnded(batchKey);
+      if (!_acceptedSessions.values.any((s) => s.batchKey == batchKey)) {
+        _acceptedExpiry.forget(batchKey);
+      }
+    }
+  }
+
+  Future<shelf.Response> _receiveAccepted(
+    shelf.Request request,
+    String sessionId,
+    String token,
+    _AcceptedSession accepted,
+  ) async {
     final queue = _ref.read(transferQueueProvider);
     final gotSlot = await queue.waitForDownloadSlot(sessionId);
     if (!gotSlot) {
@@ -520,7 +561,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
               },
           ],
         },
-        options: Options(receiveTimeout: const Duration(seconds: 60)),
+        options: Options(receiveTimeout: kPrepareResponseTimeout),
       );
 
       if (response.statusCode != 200) {
@@ -914,6 +955,7 @@ class _AcceptedSession {
   final String senderId;
   final String senderAlias;
   final String? fileMimeType;
+  final String batchKey;
 
   _AcceptedSession({
     required this.sessionId,
@@ -924,6 +966,7 @@ class _AcceptedSession {
     required this.senderId,
     required this.senderAlias,
     this.fileMimeType,
+    required this.batchKey,
   });
 }
 
