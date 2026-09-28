@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:uuid/uuid.dart';
 import '../../../../core/network/http_client.dart';
+import '../../../../core/network/request_body.dart';
 import '../../../../core/network/request_origin.dart';
 import '../../../../main.dart';
 import '../../../chat/domain/entities/message.dart';
@@ -47,8 +48,8 @@ class ClipboardNotifier {
         headers: {'Content-Type': 'application/json'},
       );
     }
+    final body = await readJsonBody(request);
     try {
-      final body = jsonDecode(await request.readAsString());
       final data = body as Map<String, dynamic>;
       _ref.read(incomingClipboardProvider.notifier).state = data;
 

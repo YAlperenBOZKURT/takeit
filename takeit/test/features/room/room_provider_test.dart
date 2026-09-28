@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:takeit/core/network/http_server.dart';
 import 'package:takeit/features/discovery/domain/entities/device.dart';
+import 'package:takeit/features/discovery/presentation/providers/device_actions_provider.dart';
 import 'package:takeit/features/discovery/presentation/providers/discovery_provider.dart';
 import 'package:takeit/features/room/domain/entities/room.dart';
 import 'package:takeit/features/room/domain/entities/room_member.dart';
@@ -247,6 +248,47 @@ void main() {
 
     expect(status, 400);
     expect(guest.invites, isEmpty);
+  });
+
+  Map<String, dynamic> invite(String fp) => {
+    'roomId': 'room-$fp',
+    'hostAlias': fp,
+    'hostFingerprint': fp,
+    'hostPort': 1,
+  };
+
+  test('invites from a blocked device are refused', () async {
+    guest.container
+        .read(blockedDevicesProvider.notifier)
+        .add(host.fingerprint, '127.0.0.1');
+
+    final status = await _post(guest, '/room/invite', invite('fresh-fp'));
+
+    expect(status, 403, reason: 'blocked by IP even under a new fingerprint');
+    expect(guest.invites, isEmpty);
+  });
+
+  test('the invite queue is capped', () async {
+    for (var i = 0; i < kMaxPendingInvites; i++) {
+      expect(await _post(guest, '/room/invite', invite('fp-$i')), 200);
+    }
+
+    final status = await _post(guest, '/room/invite', invite('fp-extra'));
+
+    expect(status, 429);
+    expect(guest.invites, hasLength(kMaxPendingInvites));
+  });
+
+  test('a leave for a device that is not in the room is refused', () async {
+    await formRoom();
+
+    final status = await _post(host, '/room/leave', {
+      'roomId': host.room!.id,
+      'fingerprint': 'someone-else',
+    });
+
+    expect(status, 403);
+    expect(host.room, isNotNull);
   });
 
   test('an older roster sync cannot roll back a newer one', () async {

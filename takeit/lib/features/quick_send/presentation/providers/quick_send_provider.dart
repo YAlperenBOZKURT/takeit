@@ -8,6 +8,8 @@ import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/http_client.dart';
 import '../../../../core/network/http_server.dart';
+import '../../../../core/network/request_body.dart';
+import '../../../../core/network/request_origin.dart';
 import '../../../../core/services/batch_idle_expiry.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/transfer_keep_alive.dart';
@@ -15,6 +17,7 @@ import '../../../../core/services/transfer_queue_service.dart';
 import '../../../../core/services/window_alert_service.dart';
 import '../../../../main.dart';
 import '../../../discovery/domain/entities/device.dart';
+import '../../../discovery/presentation/providers/device_actions_provider.dart';
 import '../../../discovery/presentation/providers/discovery_provider.dart';
 import '../../../history/presentation/providers/history_provider.dart';
 import '../../../nickname/presentation/providers/nickname_provider.dart';
@@ -200,7 +203,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   // ─── Receiver side (uses global queue) ───
 
   Future<shelf.Response> _handlePrepareBatch(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final batchId = body['batchId'] as String? ?? const Uuid().v4();
     final senderId = body['senderId'] as String?;
     final senderAlias = body['senderAlias'] as String?;
@@ -209,7 +212,8 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     if (senderId == null ||
         senderAlias == null ||
         filesJson == null ||
-        filesJson.isEmpty) {
+        filesJson.isEmpty ||
+        filesJson.length > kMaxBatchFiles) {
       return shelf.Response.badRequest(
         body: jsonEncode({'error': 'Missing required fields'}),
         headers: {'Content-Type': 'application/json'},
@@ -222,7 +226,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     for (final f in filesJson) {
       final fileName = f['fileName'] as String?;
       final fileSize = f['fileSize'] as int?;
-      if (fileName == null || fileSize == null) {
+      if (fileName == null || fileSize == null || fileSize < 0) {
         return shelf.Response.badRequest(
           body: jsonEncode({'error': 'Invalid file entry'}),
           headers: {'Content-Type': 'application/json'},
@@ -417,8 +421,15 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
           throw _QuickReceiverCancelled();
         }
 
-        sink.add(chunk);
         bytesReceived += chunk.length;
+        // Never write past the approved size — a peer could otherwise fill
+        // the disk behind an innocent-looking file size.
+        if (bytesReceived > accepted.fileSize) {
+          throw Exception(
+            'Sender exceeded the announced ${accepted.fileSize} bytes',
+          );
+        }
+        sink.add(chunk);
         bytesSinceFlush += chunk.length;
         // Bound IOSink buffering: without this, a disk slower than the
         // network lets the in-memory write buffer grow without limit.
@@ -514,7 +525,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   Future<shelf.Response> _handleText(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final senderId = body['senderId'] as String?;
     final senderAlias = body['senderAlias'] as String?;
     final content = body['content'] as String?;
@@ -522,6 +533,15 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     if (senderId == null || senderAlias == null || content == null) {
       return shelf.Response.badRequest(
         body: jsonEncode({'error': 'Missing required fields'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    if (_ref
+        .read(blockedDevicesProvider.notifier)
+        .isBlocked(senderId, remoteIpOf(request))) {
+      return shelf.Response.forbidden(
+        jsonEncode({'error': 'blocked'}),
         headers: {'Content-Type': 'application/json'},
       );
     }

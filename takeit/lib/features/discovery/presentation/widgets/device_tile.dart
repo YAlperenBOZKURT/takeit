@@ -91,7 +91,7 @@ class DeviceTile extends ConsumerWidget {
                 case 'trust':
                   ref
                       .read(trustedDevicesProvider.notifier)
-                      .add(device.fingerprint);
+                      .add(device.fingerprint, device.ip);
                   ref
                       .read(blockedDevicesProvider.notifier)
                       .remove(device.fingerprint);
@@ -108,7 +108,7 @@ class DeviceTile extends ConsumerWidget {
                 case 'block':
                   ref
                       .read(blockedDevicesProvider.notifier)
-                      .add(device.fingerprint);
+                      .add(device.fingerprint, device.ip);
                   ref
                       .read(trustedDevicesProvider.notifier)
                       .remove(device.fingerprint);

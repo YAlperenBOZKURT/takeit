@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../../../../core/network/http_client.dart';
 import '../../../../core/network/local_ip.dart';
+import '../../../../core/network/request_body.dart';
 import '../../../../core/network/request_origin.dart';
 import '../../../../core/constants/network_constants.dart';
 import '../../../../core/services/notification_service.dart';
@@ -15,6 +16,7 @@ import '../../../../core/services/window_alert_service.dart';
 import '../../../../main.dart';
 import '../../../chat/presentation/providers/chat_provider.dart';
 import '../../../discovery/domain/entities/device.dart';
+import '../../../discovery/presentation/providers/device_actions_provider.dart';
 import '../../../discovery/presentation/providers/discovery_provider.dart';
 import '../../../nickname/presentation/providers/nickname_provider.dart';
 import '../../domain/entities/room.dart';
@@ -28,6 +30,10 @@ final roomProvider = StateNotifierProvider<RoomNotifier, Room?>((ref) {
 /// How long a room invite stays valid — on the host (the pending member is
 /// auto-declined) and on the invitee (the invite is dropped from the queue).
 const kInviteTimeout = Duration(seconds: 120);
+
+/// Most invites that may wait in the queue at once. Further invites are
+/// refused until some are answered or expire, so a flood can't pile up.
+const kMaxPendingInvites = 5;
 
 /// Queue of pending room invites — multiple can arrive concurrently.
 /// Device list listens and shows the first one; after it's resolved, the next pops up.
@@ -268,7 +274,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<shelf.Response> _handleAliasUpdate(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final roomId = body['roomId'] as String?;
     final fingerprint = body['fingerprint'] as String?;
     final newAlias = body['alias'] as String?;
@@ -283,8 +289,10 @@ class RoomNotifier extends StateNotifier<Room?> {
       return shelf.Response.notFound('');
     }
 
+    // Only the member itself (from its own address) may rename itself.
+    final senderIp = remoteIpOf(request);
     final updated = state!.members.map((m) {
-      if (m.fingerprint == fingerprint) {
+      if (m.fingerprint == fingerprint && m.ip == senderIp) {
         return RoomMember(
           fingerprint: m.fingerprint,
           alias: newAlias,
@@ -335,7 +343,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<shelf.Response> _handleInvite(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     if (body is! Map<String, dynamic> ||
         body['roomId'] is! String ||
         body['hostFingerprint'] is! String ||
@@ -347,12 +355,28 @@ class RoomNotifier extends StateNotifier<Room?> {
     invite['hostIp'] = remoteIpOf(request) ?? invite['hostIp'] ?? '';
     if (invite['hostPort'] is! int) invite['hostPort'] = kDefaultPort;
 
+    final hostFingerprint = invite['hostFingerprint'] as String;
+    if (_ref
+        .read(blockedDevicesProvider.notifier)
+        .isBlocked(hostFingerprint, remoteIpOf(request))) {
+      return shelf.Response.forbidden(
+        jsonEncode({'error': 'blocked'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
     // Dedup by hostFingerprint — new invite from same person replaces the old one (LIFO).
-    final hostFingerprint = invite['hostFingerprint'] as String?;
     final current = _ref.read(roomInvitesProvider);
     final filtered = current
         .where((i) => i['hostFingerprint'] != hostFingerprint)
         .toList();
+    if (filtered.length >= kMaxPendingInvites) {
+      return shelf.Response(
+        429,
+        body: jsonEncode({'error': 'too_many_invites'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
     _ref.read(roomInvitesProvider.notifier).state = [...filtered, invite];
 
     // The host stops honouring this invite after kInviteTimeout, so drop it
@@ -598,7 +622,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<shelf.Response> _handleAccept(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final fingerprint = body['fingerprint'] as String?;
     if (fingerprint == null) {
       return shelf.Response.badRequest(body: 'Missing fingerprint');
@@ -702,7 +726,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<shelf.Response> _handleLeave(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final fingerprint = body['fingerprint'] as String?;
     final roomId = body['roomId'] as String?;
 
@@ -712,6 +736,17 @@ class RoomNotifier extends StateNotifier<Room?> {
 
     if (state == null || state!.id != roomId) {
       return shelf.Response.notFound('');
+    }
+
+    // Only the member itself (from its own address) may announce it left.
+    final leaving = state!.members
+        .where((m) => m.fingerprint == fingerprint)
+        .firstOrNull;
+    if (leaving == null || leaving.ip != remoteIpOf(request)) {
+      return shelf.Response.forbidden(
+        jsonEncode({'error': 'not_a_member'}),
+        headers: {'Content-Type': 'application/json'},
+      );
     }
 
     if (fingerprint == state!.hostFingerprint) {
@@ -817,7 +852,7 @@ class RoomNotifier extends StateNotifier<Room?> {
       );
     }
 
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final roomId = body['roomId'] as String?;
     final membersList = body['members'] as List<dynamic>?;
 
@@ -1017,7 +1052,7 @@ class RoomNotifier extends StateNotifier<Room?> {
   }
 
   Future<shelf.Response> _handleDecline(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final fingerprint = body['fingerprint'] as String?;
     if (fingerprint == null) {
       return shelf.Response.badRequest(body: 'Missing fingerprint');

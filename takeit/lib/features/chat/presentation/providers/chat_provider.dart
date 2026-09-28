@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
+import '../../../../core/network/request_body.dart';
 import '../../../../core/network/request_origin.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/window_alert_service.dart';
@@ -41,8 +42,8 @@ class ChatNotifier extends StateNotifier<List<Message>> {
         headers: {'Content-Type': 'application/json'},
       );
     }
+    final body = await readJsonBody(request);
     try {
-      final body = jsonDecode(await request.readAsString());
       var message = Message.fromJson(body as Map<String, dynamic>);
       // Strip sender's savePath — receiver will get their own after download
       if (message.type == MessageType.fileMeta) {
