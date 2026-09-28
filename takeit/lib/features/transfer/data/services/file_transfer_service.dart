@@ -148,34 +148,74 @@ class FileTransferService {
     if (fileSize == 0) onProgress(0, 0);
   }
 
-  /// Get the save path for a received file, handling name collisions.
-  /// If [customDir] is set, use that instead of the default downloads directory.
-  Future<String> getSavePath(String fileName, {String? customDir}) async {
-    final safeName = sanitizeFileName(fileName);
+  /// Suffix of a download that is still in progress.
+  static const partSuffix = '.part';
 
+  /// Reserves a place for an incoming file and returns the path of the
+  /// `.part` file to stream it into.
+  ///
+  /// The name is chosen so that neither `<name>` nor `<name>.part` exists,
+  /// and the `.part` file is created exclusively — two downloads of the same
+  /// name running in parallel can never end up writing the same file.
+  /// Until [finalizePartFile], the unfinished data never sits under the
+  /// real name, so a crash leaves an obvious `.part` rather than a file
+  /// that looks complete.
+  Future<String> reservePartFile(String fileName, {String? customDir}) async {
     final dir = customDir != null
         ? Directory(customDir)
         : await _getDownloadsDir();
-
-    // Ensure directory exists
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
 
-    var file = File('${dir.path}/$safeName');
-
-    if (!await file.exists()) return file.path;
-
-    final dotIndex = safeName.lastIndexOf('.');
-    final name = dotIndex > 0 ? safeName.substring(0, dotIndex) : safeName;
-    final ext = dotIndex > 0 ? safeName.substring(dotIndex) : '';
-
-    var counter = 1;
-    while (await file.exists()) {
-      file = File('${dir.path}/${name}_$counter$ext');
-      counter++;
+    for (final name in _candidateNames(sanitizeFileName(fileName))) {
+      final path = '${dir.path}/$name';
+      if (await File(path).exists()) continue;
+      try {
+        await File('$path$partSuffix').create(exclusive: true);
+        return '$path$partSuffix';
+      } on FileSystemException {
+        continue; // taken by a concurrent download
+      }
     }
-    return file.path;
+    throw StateError('unreachable: candidate names are unbounded');
+  }
+
+  /// The final path a `.part` file from [reservePartFile] is meant for.
+  static String finalPathOf(String partPath) =>
+      partPath.substring(0, partPath.length - partSuffix.length);
+
+  /// Moves a completed `.part` file to its final name and returns that path:
+  /// normally [finalPathOf], or the next free variant if something took
+  /// that name while the download was running.
+  Future<String> finalizePartFile(String partPath) async {
+    final target = File(finalPathOf(partPath));
+    final dir = target.parent.path;
+    final baseName = target.uri.pathSegments.last;
+    for (final name in _candidateNames(baseName)) {
+      final path = '$dir/$name';
+      try {
+        // Claim the name first so a concurrent finalize can't pick it too;
+        // the rename then replaces this empty placeholder.
+        await File(path).create(exclusive: true);
+      } on FileSystemException {
+        continue;
+      }
+      await File(partPath).rename(path);
+      return path;
+    }
+    throw StateError('unreachable: candidate names are unbounded');
+  }
+
+  /// `name.ext`, `name_1.ext`, `name_2.ext`, …
+  static Iterable<String> _candidateNames(String fileName) sync* {
+    yield fileName;
+    final dotIndex = fileName.lastIndexOf('.');
+    final stem = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+    final ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
+    for (var i = 1; ; i++) {
+      yield '${stem}_$i$ext';
+    }
   }
 
   /// Strip path separators, traversal fragments, and control chars.

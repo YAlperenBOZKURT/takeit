@@ -1,22 +1,29 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import '../../../../core/storage/atomic_file_writer.dart';
 import '../../domain/entities/transfer_record.dart';
 
 class HistoryStorage {
   static const _fileName = 'transfer_history.json';
-  File? _file;
 
-  Future<File> _getFile() async {
-    if (_file != null) return _file!;
-    final dir = await getApplicationSupportDirectory();
-    _file = File('${dir.path}/$_fileName');
-    return _file!;
+  /// Fixed file for tests; otherwise resolved from path_provider.
+  final File? _fixedFile;
+  AtomicFileWriter? _writer;
+
+  HistoryStorage({File? file}) : _fixedFile = file;
+
+  Future<AtomicFileWriter> _getWriter() async {
+    if (_writer != null) return _writer!;
+    final file =
+        _fixedFile ??
+        File('${(await getApplicationSupportDirectory()).path}/$_fileName');
+    return _writer = AtomicFileWriter(file);
   }
 
   Future<List<TransferRecord>> load() async {
     try {
-      final file = await _getFile();
+      final file = (await _getWriter()).file;
       if (!await file.exists()) return [];
       final content = await file.readAsString();
       final list = jsonDecode(content) as List;
@@ -28,31 +35,19 @@ class HistoryStorage {
     }
   }
 
+  /// Replaces the stored history with [records] (atomic, queued).
   Future<void> save(List<TransferRecord> records) async {
-    final file = await _getFile();
     final json = jsonEncode(records.map((r) => r.toJson()).toList());
-    await file.writeAsString(json);
-  }
-
-  Future<void> addRecord(TransferRecord record) async {
-    final records = await load();
-    records.insert(0, record);
-    if (records.length > 500) {
-      records.removeRange(500, records.length);
+    try {
+      await (await _getWriter()).write(json);
+    } catch (_) {
+      // No storage available (e.g. tests without plugins) — keep in memory.
     }
-    await save(records);
   }
 
   Future<void> clear() async {
-    final file = await _getFile();
-    if (await file.exists()) {
-      await file.delete();
-    }
-  }
-
-  Future<void> deleteRecord(String id) async {
-    final records = await load();
-    records.removeWhere((r) => r.id == id);
-    await save(records);
+    try {
+      await (await _getWriter()).delete();
+    } catch (_) {}
   }
 }

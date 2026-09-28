@@ -5,7 +5,7 @@ class ReceiveFile {
 
   ReceiveFile(this._service);
 
-  Future<String> getSavePath(String fileName, {String? customDir}) {
-    return _service.getSavePath(fileName, customDir: customDir);
+  Future<String> reservePartFile(String fileName, {String? customDir}) {
+    return _service.reservePartFile(fileName, customDir: customDir);
   }
 }

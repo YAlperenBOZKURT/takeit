@@ -1,14 +1,13 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'app.dart';
 import 'core/network/http_server.dart';
 import 'core/services/background_transfer_service.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/window_alert_service.dart';
+import 'core/storage/settings_store.dart';
 import 'features/discovery/presentation/providers/discovery_provider.dart';
 
 final httpServerProvider = Provider<AppHttpServer>((ref) {
@@ -21,58 +20,25 @@ final serverErrorProvider = Provider<String?>((ref) => null);
 /// Pre-loaded nickname from settings.json (empty string if none saved).
 final initialNicknameProvider = Provider<String>((ref) => '');
 
-Future<String> _loadSavedNickname() async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/settings.json');
-    if (!await file.exists()) return '';
-    final json = jsonDecode(await file.readAsString());
-    return (json['nickname'] as String?) ?? '';
-  } catch (e) {
-    debugPrint('Failed to load nickname: $e');
-    return '';
-  }
-}
-
-Future<String> _loadOrCreateFingerprint() async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/settings.json');
-    Map<String, dynamic> existing = {};
-    if (await file.exists()) {
-      existing = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    }
-    final saved = existing['fingerprint'] as String?;
-    if (saved != null && saved.isNotEmpty) return saved;
-    final newFp = const Uuid().v4();
-    existing['fingerprint'] = newFp;
-    await file.writeAsString(jsonEncode(existing));
-    return newFp;
-  } catch (e) {
-    debugPrint('Failed to load/create fingerprint: $e');
-    return const Uuid().v4();
-  }
-}
-
-Future<void> _loadNotificationSettings() async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/settings.json');
-    if (!await file.exists()) return;
-    final json = jsonDecode(await file.readAsString());
-    final sound = json['notificationSound'] as bool? ?? true;
-    final vibration = json['notificationVibration'] as bool? ?? true;
-    NotificationService.updateSettings(sound: sound, vibration: vibration);
-  } catch (e) {
-    debugPrint('Failed to load notification settings: $e');
-  }
+/// The persistent device id. Created once and stored with the settings, so
+/// restarts keep the same identity (no ghost duplicates on peers).
+Future<String> _loadOrCreateFingerprint(SettingsStore settings) async {
+  final saved = settings.get<String>('fingerprint');
+  if (saved != null && saved.isNotEmpty) return saved;
+  final fingerprint = const Uuid().v4();
+  await settings.set('fingerprint', fingerprint);
+  return fingerprint;
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   BackgroundTransferService.init();
   await NotificationService.init();
-  await _loadNotificationSettings();
+  final settings = await SettingsStore.open();
+  NotificationService.updateSettings(
+    sound: settings.get<bool>('notificationSound') ?? true,
+    vibration: settings.get<bool>('notificationVibration') ?? true,
+  );
   if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
     await WindowAlertService.init();
   }
@@ -84,13 +50,15 @@ Future<void> main() async {
     serverError = e.message;
     debugPrint('Server failed to start: $e');
   }
-  final savedNickname = await _loadSavedNickname();
-  final fingerprint = await _loadOrCreateFingerprint();
+  final fingerprint = await _loadOrCreateFingerprint(settings);
   runApp(
     ProviderScope(
       overrides: [
+        settingsStoreProvider.overrideWithValue(settings),
         httpServerProvider.overrideWithValue(server),
-        initialNicknameProvider.overrideWithValue(savedNickname),
+        initialNicknameProvider.overrideWithValue(
+          settings.get<String>('nickname') ?? '',
+        ),
         serverErrorProvider.overrideWithValue(serverError),
         fingerprintProvider.overrideWithValue(fingerprint),
       ],

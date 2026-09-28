@@ -8,15 +8,32 @@ final historyProvider =
       return HistoryNotifier();
     });
 
+/// Transfer history. The in-memory list is the source of truth and is
+/// written out whole after every change.
+///
+/// Each change used to re-read the file, edit it and write it back, so
+/// transfers finishing at the same time overwrote each other's records,
+/// and records added before the initial load finished were wiped by it.
 class HistoryNotifier extends StateNotifier<List<TransferRecord>> {
-  final HistoryStorage _storage = HistoryStorage();
+  static const maxRecords = 500;
 
-  HistoryNotifier() : super([]) {
-    _load();
+  final HistoryStorage _storage;
+  late final Future<void> _loaded;
+
+  HistoryNotifier({HistoryStorage? storage})
+    : _storage = storage ?? HistoryStorage(),
+      super([]) {
+    _loaded = _load();
   }
 
+  /// Completes once the saved history has been loaded.
+  Future<void> get ready => _loaded;
+
   Future<void> _load() async {
-    state = await _storage.load();
+    final saved = await _storage.load();
+    if (!mounted) return;
+    // Keep anything recorded while the file was still loading (newest first).
+    state = [...state, ...saved].take(maxRecords).toList();
   }
 
   Future<void> addRecord({
@@ -37,20 +54,26 @@ class HistoryNotifier extends StateNotifier<List<TransferRecord>> {
       fileMimeType: fileMimeType,
       savePath: savePath,
     );
-    await _storage.addRecord(record);
-    state = [record, ...state];
-    if (state.length > 500) {
-      state = state.sublist(0, 500);
-    }
+    state = [record, ...state].take(maxRecords).toList();
+    await _persist();
   }
 
   Future<void> clearHistory() async {
-    await _storage.clear();
     state = [];
+    await _loaded;
+    await _storage.clear();
   }
 
   Future<void> deleteRecord(String id) async {
-    await _storage.deleteRecord(id);
     state = state.where((r) => r.id != id).toList();
+    await _persist();
+  }
+
+  /// Saves the current list — but only after the initial load, so an early
+  /// save can't replace the stored history with a partial list.
+  Future<void> _persist() async {
+    await _loaded;
+    if (!mounted) return;
+    await _storage.save(state);
   }
 }

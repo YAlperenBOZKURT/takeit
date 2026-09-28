@@ -357,10 +357,13 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     }
 
     final customDir = _ref.read(downloadPathProvider);
-    final savePath = await _service.getSavePath(
+    // Data goes to a reserved `.part` file and gets its real name only once
+    // complete.
+    final partPath = await _service.reservePartFile(
       accepted.fileName,
       customDir: customDir,
     );
+    var savePath = FileTransferService.finalPathOf(partPath);
 
     final session = TransferSession(
       sessionId: sessionId,
@@ -384,7 +387,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     var bytesReceived = 0;
     final receiveStartedAt = DateTime.now();
     try {
-      final file = File(savePath);
+      final file = File(partPath);
       sink = file.openWrite();
       var bytesSinceFlush = 0;
 
@@ -438,6 +441,8 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
         );
       }
 
+      savePath = await _service.finalizePartFile(partPath);
+
       debugPrint(
         'Quick received ${accepted.fileName}: $bytesReceived bytes in '
         '${DateTime.now().difference(receiveStartedAt).inSeconds}s',
@@ -449,7 +454,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
       _flushProgress(sessionId);
       _updateSession(
         sessionId,
-        (s) => s.copyWith(status: TransferStatus.completed),
+        (s) => s.copyWith(status: TransferStatus.completed, savePath: savePath),
       );
       queue.downloadCompleted(sessionId, senderAlias: accepted.senderAlias);
 
@@ -491,7 +496,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
       sink = null;
 
       try {
-        final partial = File(savePath);
+        final partial = File(partPath);
         if (await partial.exists()) await partial.delete();
       } catch (_) {}
 
