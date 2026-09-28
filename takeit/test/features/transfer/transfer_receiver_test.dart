@@ -6,21 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:takeit/core/network/http_server.dart';
 import 'package:takeit/core/services/transfer_queue_service.dart';
+import 'package:takeit/core/storage/settings_store.dart';
 import 'package:takeit/features/discovery/presentation/providers/device_actions_provider.dart';
 import 'package:takeit/features/discovery/presentation/providers/discovery_provider.dart';
 import 'package:takeit/features/history/presentation/providers/history_provider.dart';
-import 'package:takeit/features/settings/presentation/providers/settings_provider.dart';
 import 'package:takeit/features/transfer/domain/entities/transfer_session.dart';
 import 'package:takeit/features/transfer/presentation/providers/transfer_provider.dart';
 import 'package:takeit/main.dart';
-
-/// Download-path notifier pinned to a temp dir so no path_provider plugin
-/// call is needed.
-class _FixedDownloadPath extends DownloadPathNotifier {
-  _FixedDownloadPath(String path) {
-    state = path;
-  }
-}
 
 /// History notifier that skips disk persistence (no plugin in tests).
 class _NoopHistory extends HistoryNotifier {
@@ -58,8 +50,9 @@ void main() {
       overrides: [
         httpServerProvider.overrideWithValue(server),
         fingerprintProvider.overrideWithValue('receiver-fp'),
-        downloadPathProvider.overrideWith(
-          (ref) => _FixedDownloadPath(downloadDir.path),
+        // Downloads pinned to a temp dir so no path_provider call is needed.
+        settingsStoreProvider.overrideWithValue(
+          SettingsStore.inMemory({'downloadPath': downloadDir.path}),
         ),
         historyProvider.overrideWith((ref) => _NoopHistory()),
         transferProvider.overrideWith(
@@ -185,7 +178,62 @@ void main() {
     final saved = File('${downloadDir.path}/big_ok.bin');
     expect(saved.existsSync(), isTrue);
     expect(saved.lengthSync(), payload.length);
+    expect(sessionOf(sessionId).savePath, saved.path);
+    expect(
+      downloadDir.listSync().map((e) => e.uri.pathSegments.last),
+      ['big_ok.bin'],
+      reason: 'no .part file may be left behind',
+    );
   });
+
+  test('a download in progress only exists as a .part file', () async {
+    final payload = List<int>.generate(64 * 1024, (i) => i % 251);
+    final (sessionId, token) = await prepare('slow.bin', payload.length);
+
+    final done = uploadSlowly(
+      sessionId,
+      token,
+      payload,
+      duration: const Duration(milliseconds: 400),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    final midway = downloadDir
+        .listSync()
+        .map((e) => e.uri.pathSegments.last)
+        .toList();
+    expect(await done, 200);
+
+    expect(midway, ['slow.bin.part']);
+    expect(File('${downloadDir.path}/slow.bin').lengthSync(), payload.length);
+  });
+
+  test(
+    'parallel downloads with the same name land in separate files',
+    () async {
+      final a = List<int>.filled(256 * 1024, 1);
+      final b = List<int>.filled(256 * 1024, 2);
+      final sessions = await prepareBatch([
+        ('same.bin', a.length),
+        ('same.bin', b.length),
+      ]);
+
+      final statuses = await Future.wait([
+        upload(sessions[0].$1, sessions[0].$2, a),
+        upload(sessions[1].$1, sessions[1].$2, b),
+      ]);
+
+      expect(statuses, [200, 200]);
+      final fillBytes = <int>{};
+      for (final name in ['same.bin', 'same_1.bin']) {
+        final bytes = File('${downloadDir.path}/$name').readAsBytesSync();
+        expect(bytes, hasLength(a.length), reason: name);
+        // Each file holds exactly one sender's bytes — nothing interleaved.
+        expect(bytes.toSet(), hasLength(1), reason: name);
+        fillBytes.add(bytes.first);
+      }
+      expect(fillBytes, {1, 2});
+    },
+  );
 
   test('truncated transfer fails and the partial file is deleted', () async {
     // Declare 1 MB in prepare-batch but deliver only 200 KB.

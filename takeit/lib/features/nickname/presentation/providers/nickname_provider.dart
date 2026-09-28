@@ -1,46 +1,26 @@
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
+import '../../../../core/storage/settings_store.dart';
 import '../../../../core/utils/animal_name_generator.dart';
 import '../../../../main.dart';
 
 final nicknameProvider = StateNotifierProvider<NicknameNotifier, String>((ref) {
   final initial = ref.read(initialNicknameProvider);
-  return NicknameNotifier(initial);
+  return NicknameNotifier(initial, ref.read(settingsStoreProvider));
 });
 
 class NicknameNotifier extends StateNotifier<String> {
-  NicknameNotifier(super.initial);
+  final SettingsStore _store;
 
-  Future<File> _getFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/settings.json');
-  }
+  NicknameNotifier(super.initial, this._store);
 
-  Future<void> setNickname(String value) async {
+  Future<void> setNickname(String value) {
     state = value.trim();
-    await _save();
+    return _store.set('nickname', state);
   }
 
   void generateRandom() {
     state = generateAnimalName();
-    _save();
-  }
-
-  Future<void> _save() async {
-    try {
-      final file = await _getFile();
-      Map<String, dynamic> existing = {};
-      try {
-        if (await file.exists()) {
-          existing =
-              jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-        }
-      } catch (_) {}
-      existing['nickname'] = state;
-      await file.writeAsString(jsonEncode(existing));
-    } catch (_) {}
+    _store.set('nickname', state);
   }
 
   bool get isValid => state.isNotEmpty;
