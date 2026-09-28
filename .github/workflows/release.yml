@@ -12,6 +12,9 @@ on:
 
 env:
   APP_NAME: 'TakeIt'
+  # Tag being released: the pushed tag, or the one typed in when run by hand
+  # (github.ref_name is the branch name in that case).
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # -----------------------------------------------------------
@@ -22,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-java@v4
         with:
@@ -42,14 +47,39 @@ jobs:
         working-directory: takeit
         run: dart run build_runner build --delete-conflicting-outputs
 
+      - name: Set up release signing
+        working-directory: takeit/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning title=APK signed with a debug key::ANDROID_KEYSTORE_BASE64 is not set. This APK is signed with a throwaway key and cannot update existing installs."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > app/upload-keystore.jks
+          cat > key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      # Version comes from the tag; the build number is derived from it
+      # (1.2.3 -> 10203) so Android's versionCode always increases.
       - name: Build APK
         working-directory: takeit
-        run: flutter build apk --release
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          BUILD_NUMBER=$(echo "$VERSION" | awk -F. '{print $1*10000 + $2*100 + $3}')
+          flutter build apk --release --build-name="$VERSION" --build-number="$BUILD_NUMBER"
 
       - name: Rename APK
         working-directory: takeit
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/TakeIt-${VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
@@ -65,6 +95,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: subosito/flutter-action@v2
         with:
@@ -85,7 +117,12 @@ jobs:
 
       - name: Build Windows release
         working-directory: takeit
-        run: flutter build windows --release
+        shell: pwsh
+        run: |
+          $version = "$env:RELEASE_TAG" -replace '^v',''
+          $p = ($version -replace '[-+].*$','').Split('.')
+          $build = [int]$p[0] * 10000 + [int]$p[1] * 100 + [int]$p[2]
+          flutter build windows --release --build-name=$version --build-number=$build
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -94,14 +131,14 @@ jobs:
         working-directory: takeit
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v',''
+          $version = "$env:RELEASE_TAG" -replace '^v',''
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer.iss
 
       - name: Rename installer
         working-directory: takeit
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v',''
+          $version = "$env:RELEASE_TAG" -replace '^v',''
           Rename-Item "build\installer\TakeIt_Setup.exe" "TakeIt-Setup-$version.exe"
 
       - uses: actions/upload-artifact@v4
@@ -117,6 +154,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: subosito/flutter-action@v2
         with:
@@ -137,12 +176,15 @@ jobs:
 
       - name: Build macOS release
         working-directory: takeit
-        run: flutter build macos --release
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          BUILD_NUMBER=$(echo "$VERSION" | awk -F. '{print $1*10000 + $2*100 + $3}')
+          flutter build macos --release --build-name="$VERSION" --build-number="$BUILD_NUMBER"
 
       - name: Package as DMG
         working-directory: takeit
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           APP_PATH="build/macos/Build/Products/Release/takeit.app"
           DMG_NAME="TakeIt-${VERSION}.dmg"
           brew install create-dmg
@@ -172,6 +214,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux build dependencies
         run: |
@@ -197,12 +241,15 @@ jobs:
 
       - name: Build Linux release
         working-directory: takeit
-        run: flutter build linux --release
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          BUILD_NUMBER=$(echo "$VERSION" | awk -F. '{print $1*10000 + $2*100 + $3}')
+          flutter build linux --release --build-name="$VERSION" --build-number="$BUILD_NUMBER"
 
       - name: Package as tar.gz
         working-directory: takeit
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           cd build/linux/x64/release/bundle
           tar -czf "../../../../../TakeIt-${VERSION}-linux-x64.tar.gz" .
 
@@ -226,14 +273,24 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The app downloads <asset>.sha256 next to the installer and refuses
+      # an update whose SHA-256 does not match.
+      - name: Generate SHA-256 checksums
+        working-directory: artifacts
+        run: |
+          for f in TakeIt-*; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          cat ./*.sha256
+
       - name: List artifacts
         run: ls -lh artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: TakeIt ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: TakeIt ${{ env.RELEASE_TAG }}
           draft: true
           generate_release_notes: true
           files: |
@@ -241,3 +298,4 @@ jobs:
             artifacts/TakeIt-Setup-*.exe
             artifacts/TakeIt-*.dmg
             artifacts/TakeIt-*-linux-x64.tar.gz
+            artifacts/TakeIt-*.sha256
