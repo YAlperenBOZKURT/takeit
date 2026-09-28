@@ -13,6 +13,9 @@ const kApprovalTimeout = Duration(seconds: 120);
 /// a sender that has already given up.
 const kPrepareResponseTimeout = Duration(seconds: 125);
 
+/// Most files a single prepare-batch request may announce.
+const kMaxBatchFiles = 1000;
+
 /// Source of a transfer request (room chat or quick send).
 enum TransferSource { room, quick }
 
@@ -103,15 +106,18 @@ class TransferQueueService {
   /// The caller (prepare-batch handler) awaits this — it blocks the HTTP response.
   Future<List<bool>> enqueueBatch(TransferBatch batch) async {
     // Session-based block: silently reject all files in the batch
-    final blocked = _ref.read(blockedDevicesProvider);
-    if (blocked.contains(batch.senderId)) {
+    if (_ref
+        .read(blockedDevicesProvider.notifier)
+        .isBlocked(batch.senderId, batch.senderIp)) {
       debugPrint('Batch from ${batch.senderAlias} blocked (session)');
       return List.filled(batch.files.length, false);
     }
 
-    // Session-based trust: auto-accept without dialog
-    final trusted = _ref.read(trustedDevicesProvider);
-    if (trusted.contains(batch.senderId)) {
+    // Session-based trust: auto-accept without dialog — only for the device
+    // the user trusted (fingerprint and IP), not anyone claiming its id.
+    if (_ref
+        .read(trustedDevicesProvider.notifier)
+        .isTrusted(batch.senderId, batch.senderIp)) {
       debugPrint('Batch from ${batch.senderAlias} auto-accepted (trusted)');
       for (final f in batch.files) {
         if (f.sessionId != null) _approvedWaiting.add(f.sessionId!);
@@ -295,7 +301,11 @@ class TransferQueueService {
   }
 
   /// Cancel a specific pending batch by ID (e.g. sender aborted before approval).
-  void cancelBatch(String batchId) {
+  ///
+  /// When [fromIp] is given (a cancel request from the network), only the
+  /// device that sent the batch may cancel it — batch ids are chosen by the
+  /// sender, so they are not a secret.
+  void cancelBatch(String batchId, {String? fromIp}) {
     TransferBatch? target;
     for (final b in _pendingQueue) {
       if (b.batchId == batchId) {
@@ -304,6 +314,7 @@ class TransferQueueService {
       }
     }
     if (target == null) return;
+    if (fromIp != null && target.senderIp != fromIp) return;
 
     if (!target.approvalCompleter.isCompleted) {
       target.approvalCompleter.complete(

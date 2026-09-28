@@ -5,6 +5,7 @@ import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import '../constants/network_constants.dart';
+import 'request_body.dart';
 
 typedef RequestHandler = Future<shelf.Response> Function(shelf.Request request);
 
@@ -75,6 +76,7 @@ class AppHttpServer {
         .addMiddleware(_injectRemoteIp())
         .addMiddleware(_privateSubnetOnly())
         .addMiddleware(_rateLimiter())
+        .addMiddleware(_rejectBadBodies())
         .addHandler(_router.call);
 
     _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
@@ -165,13 +167,39 @@ class AppHttpServer {
       return (shelf.Request request) {
         final context = request.context;
         final httpRequest = context['shelf.io.connection_info'];
+        // Always overwrite: a client-sent X-Real-IP must never pass through.
+        // Empty means unknown, which every check treats as untrusted.
         final updatedRequest = request.change(
           headers: {
-            if (httpRequest is HttpConnectionInfo)
-              'X-Real-IP': httpRequest.remoteAddress.address,
+            'X-Real-IP': httpRequest is HttpConnectionInfo
+                ? httpRequest.remoteAddress.address
+                : '',
           },
         );
         return innerHandler(updatedRequest);
+      };
+    };
+  }
+
+  /// Turns body-parsing failures thrown by handlers into client errors
+  /// instead of a generic 500: too large → 413, malformed JSON → 400.
+  shelf.Middleware _rejectBadBodies() {
+    return (shelf.Handler innerHandler) {
+      return (shelf.Request request) async {
+        try {
+          return await innerHandler(request);
+        } on PayloadTooLargeException {
+          return shelf.Response(
+            413,
+            body: jsonEncode({'error': 'payload_too_large'}),
+            headers: {'Content-Type': 'application/json'},
+          );
+        } on FormatException {
+          return shelf.Response.badRequest(
+            body: jsonEncode({'error': 'malformed_json'}),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
       };
     };
   }

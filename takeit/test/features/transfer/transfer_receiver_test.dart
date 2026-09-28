@@ -10,9 +10,34 @@ import 'package:takeit/core/storage/settings_store.dart';
 import 'package:takeit/features/discovery/presentation/providers/device_actions_provider.dart';
 import 'package:takeit/features/discovery/presentation/providers/discovery_provider.dart';
 import 'package:takeit/features/history/presentation/providers/history_provider.dart';
+import 'package:takeit/features/room/domain/entities/room.dart';
+import 'package:takeit/features/room/domain/entities/room_member.dart';
+import 'package:takeit/features/room/presentation/providers/room_provider.dart';
 import 'package:takeit/features/transfer/domain/entities/transfer_session.dart';
 import 'package:takeit/features/transfer/presentation/providers/transfer_provider.dart';
 import 'package:takeit/main.dart';
+
+/// Room notifier already in a room with the test sender (room transfers are
+/// only accepted from room members).
+class _InRoomWithSender extends RoomNotifier {
+  _InRoomWithSender(super.ref, {required int senderPort}) {
+    state = Room(
+      id: 'room-1',
+      hostFingerprint: 'test-sender-fp',
+      members: [
+        RoomMember(
+          fingerprint: 'test-sender-fp',
+          alias: 'Test Sender',
+          ip: '127.0.0.1',
+          port: senderPort,
+          deviceType: 'desktop',
+          status: MemberStatus.accepted,
+        ),
+      ],
+      createdAt: DateTime.now(),
+    );
+  }
+}
 
 /// History notifier that skips disk persistence (no plugin in tests).
 class _NoopHistory extends HistoryNotifier {
@@ -59,13 +84,17 @@ void main() {
           (ref) =>
               TransferNotifier(ref, acceptedIdleTimeout: acceptedIdleTimeout),
         ),
+        roomProvider.overrideWith(
+          (ref) => _InRoomWithSender(ref, senderPort: port),
+        ),
       ],
     );
 
     // Instantiating the notifier registers the transfer HTTP handlers.
     container.read(transferProvider.notifier);
+    container.read(roomProvider.notifier);
     // Trust the sender so prepare-batch auto-accepts without a dialog.
-    container.read(trustedDevicesProvider.notifier).add(senderId);
+    container.read(trustedDevicesProvider.notifier).add(senderId, '127.0.0.1');
   });
 
   tearDown(() async {
@@ -301,4 +330,52 @@ void main() {
       expect(downloadDir.listSync(), isEmpty);
     },
   );
+
+  test('a sender pushing more than the approved size is cut off', () async {
+    final (sessionId, token) = await prepare('small.bin', 1024);
+
+    int? status;
+    try {
+      status = await upload(sessionId, token, List<int>.filled(64 * 1024, 7));
+    } on IOException {
+      // The receiver stopped reading mid-body and the connection dropped.
+      status = null;
+    }
+
+    // Refused either way: a 500 or the connection cut mid-body.
+    expect(status, anyOf(500, isNull));
+    expect(sessionOf(sessionId).status, TransferStatus.failed);
+    // With the connection cut the client doesn't wait for the receiver's
+    // cleanup, so give the .part deletion a moment.
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    while (downloadDir.listSync().isNotEmpty &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(downloadDir.listSync(), isEmpty, reason: 'nothing may be kept');
+  });
+
+  test('room transfers from a device outside the room are refused', () async {
+    await container.read(roomProvider.notifier).leaveRoom();
+
+    final client = HttpClient();
+    final req = await client.postUrl(
+      Uri.parse('http://127.0.0.1:$port/api/takeit/v1/transfer/prepare-batch'),
+    );
+    req.headers.contentType = ContentType.json;
+    req.write(
+      jsonEncode({
+        'senderId': senderId,
+        'senderAlias': 'Test Sender',
+        'files': [
+          {'fileName': 'x.bin', 'fileSize': 1},
+        ],
+      }),
+    );
+    final res = await req.close();
+    await res.drain<void>();
+    client.close();
+
+    expect(res.statusCode, 403);
+  });
 }

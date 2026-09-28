@@ -7,6 +7,8 @@ import 'package:uuid/uuid.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import '../../../../core/network/http_client.dart';
 import '../../../../core/network/http_server.dart';
+import '../../../../core/network/request_body.dart';
+import '../../../../core/network/request_origin.dart';
 import '../../../../core/services/batch_idle_expiry.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/transfer_keep_alive.dart';
@@ -113,10 +115,12 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   Future<shelf.Response> _handleCancelBatch(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    final body = await readJsonBody(request);
     final batchId = body['batchId'] as String?;
     if (batchId != null) {
-      _ref.read(transferQueueProvider).cancelBatch(batchId);
+      _ref
+          .read(transferQueueProvider)
+          .cancelBatch(batchId, fromIp: remoteIpOf(request) ?? '');
     }
     return shelf.Response.ok(
       jsonEncode({'status': 'cancelled'}),
@@ -126,8 +130,22 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
 
   // ─── Receiver side (uses global queue) ───
 
+  /// Room transfers are only taken from devices in our current room (quick
+  /// send has its own endpoints for everyone else).
+  bool _isFromRoomMember(shelf.Request request) {
+    final room = _ref.read(roomProvider);
+    return room != null &&
+        isFromAllowedIp(request, room.members.map((m) => m.ip));
+  }
+
   Future<shelf.Response> _handlePrepareBatch(shelf.Request request) async {
-    final body = jsonDecode(await request.readAsString());
+    if (!_isFromRoomMember(request)) {
+      return shelf.Response.forbidden(
+        jsonEncode({'error': 'not_a_member'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    final body = await readJsonBody(request);
     final batchId = body['batchId'] as String? ?? const Uuid().v4();
     final senderId = body['senderId'] as String?;
     final senderAlias = body['senderAlias'] as String?;
@@ -136,7 +154,8 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
     if (senderId == null ||
         senderAlias == null ||
         filesJson == null ||
-        filesJson.isEmpty) {
+        filesJson.isEmpty ||
+        filesJson.length > kMaxBatchFiles) {
       return shelf.Response.badRequest(
         body: jsonEncode({'error': 'Missing required fields'}),
         headers: {'Content-Type': 'application/json'},
@@ -149,7 +168,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
     for (final f in filesJson) {
       final fileName = f['fileName'] as String?;
       final fileSize = f['fileSize'] as int?;
-      if (fileName == null || fileSize == null) {
+      if (fileName == null || fileSize == null || fileSize < 0) {
         return shelf.Response.badRequest(
           body: jsonEncode({'error': 'Invalid file entry'}),
           headers: {'Content-Type': 'application/json'},
@@ -335,8 +354,15 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
           throw _ReceiverCancelled();
         }
 
-        sink.add(chunk);
         bytesReceived += chunk.length;
+        // Never write past the approved size — a peer could otherwise fill
+        // the disk behind an innocent-looking file size.
+        if (bytesReceived > accepted.fileSize) {
+          throw Exception(
+            'Sender exceeded the announced ${accepted.fileSize} bytes',
+          );
+        }
+        sink.add(chunk);
         bytesSinceFlush += chunk.length;
         // Bound IOSink buffering: without this, a disk slower than the
         // network lets the in-memory write buffer grow without limit.
