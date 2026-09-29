@@ -209,21 +209,35 @@ class TransferQueueService {
     return false;
   }
 
+  /// Uploads waiting for a download slot; woken whenever one frees up.
+  final List<Completer<void>> _slotWaiters = [];
+
   /// Wait until a download slot is available. Returns false if timed out.
   Future<bool> waitForDownloadSlot(
     String transferId, {
     Duration timeout = const Duration(seconds: 120),
   }) async {
-    if (canStartDownload(transferId)) return true;
-
     final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (canStartDownload(transferId)) return true;
+    while (!canStartDownload(transferId)) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        _approvedWaiting.remove(transferId);
+        return false;
+      }
+      // Sleep until a slot is released (instead of polling), then retry —
+      // another waiter may have taken it first.
+      final waiter = Completer<void>();
+      _slotWaiters.add(waiter);
+      await waiter.future.timeout(remaining, onTimeout: () {});
+      _slotWaiters.remove(waiter);
     }
+    return true;
+  }
 
-    _approvedWaiting.remove(transferId);
-    return false;
+  void _wakeSlotWaiters() {
+    for (final waiter in List.of(_slotWaiters)) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
   }
 
   /// Mark download as completed. Frees the slot for the next transfer.
@@ -233,6 +247,7 @@ class TransferQueueService {
       _activeDownloadIds,
     );
     _approvedWaiting.remove(transferId);
+    _wakeSlotWaiters();
   }
 
   /// Mark download as failed. Frees the slot.
@@ -243,6 +258,7 @@ class TransferQueueService {
       _activeDownloadIds,
     );
     _approvedWaiting.remove(transferId);
+    _wakeSlotWaiters();
   }
 
   /// Pick the next batch from pending queue using round-robin per sender.

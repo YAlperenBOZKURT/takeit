@@ -265,5 +265,12 @@
   "@invitesYouToRoom": { "placeholders": { "name": { "type": "String" } } },
   "fileDeclined": "Declined",
   "transferDeclinedToast": "Your transfer was declined",
-  "transferFailedToast": "Transfer failed"
+  "transferFailedToast": "Transfer failed",
+  "connectByIp": "Connect by IP",
+  "connectByIpHint": "The other device must be on the same network with TakeIt open.",
+  "sendInvite": "Send Invite",
+  "invalidIpAddress": "Invalid IP address",
+  "thisDeviceIp": "This device IP",
+  "ipNotAvailable": "Not available",
+  "refresh": "Refresh"
 }

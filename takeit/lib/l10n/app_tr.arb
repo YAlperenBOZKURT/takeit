@@ -193,5 +193,12 @@
   "invitesYouToRoom": "{name} seni odaya davet ediyor",
   "fileDeclined": "Reddedildi",
   "transferDeclinedToast": "Transferiniz reddedildi",
-  "transferFailedToast": "Transfer başarısız"
+  "transferFailedToast": "Transfer başarısız",
+  "connectByIp": "IP ile bağlan",
+  "connectByIpHint": "Karşı cihaz aynı ağda olmalı ve TakeIt açık olmalı.",
+  "sendInvite": "Davet Gönder",
+  "invalidIpAddress": "Geçersiz IP adresi",
+  "thisDeviceIp": "Bu cihazın IP adresi",
+  "ipNotAvailable": "Bulunamadı",
+  "refresh": "Yenile"
 }

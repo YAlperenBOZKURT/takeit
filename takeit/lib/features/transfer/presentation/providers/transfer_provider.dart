@@ -56,6 +56,10 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   /// Active outgoing sends, keyed by local sessionId.
   final Map<String, _ActiveSend> _activeSends = {};
 
+  /// Sessions cancelled by either side — checked for every received chunk,
+  /// so a set lookup instead of scanning the transfer list each time.
+  final Set<String> _cancelledReceives = {};
+
   /// Retry info for failed outgoing sends, keyed by local sessionId.
   final Map<String, _RetryInfo> _retryInfos = {};
 
@@ -346,11 +350,8 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
       );
 
       await for (final chunk in body) {
-        // Check if user cancelled on this side
-        final current = state
-            .where((s) => s.sessionId == sessionId)
-            .firstOrNull;
-        if (current?.status == TransferStatus.cancelled) {
+        // Cancelled on this side (by the user or the sender's cancel call).
+        if (_cancelledReceives.contains(sessionId)) {
           throw _ReceiverCancelled();
         }
 
@@ -460,6 +461,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
         }),
       );
     } finally {
+      _cancelledReceives.remove(sessionId);
       try {
         await sink?.close();
       } catch (_) {}
@@ -470,6 +472,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
     final params = request.url.queryParameters;
     final sessionId = params['sessionId'];
     if (sessionId != null) {
+      _cancelledReceives.add(sessionId);
       _updateSession(
         sessionId,
         (s) => s.copyWith(status: TransferStatus.cancelled),
@@ -853,6 +856,7 @@ class TransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   void cancelSession(String sessionId) {
+    _cancelledReceives.add(sessionId);
     _updateSession(
       sessionId,
       (s) => s.copyWith(status: TransferStatus.cancelled),

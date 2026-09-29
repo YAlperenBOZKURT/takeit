@@ -583,4 +583,26 @@ class AppStringsTr extends AppStrings {
 
   @override
   String get transferFailedToast => 'Transfer başarısız';
+
+  @override
+  String get connectByIp => 'IP ile bağlan';
+
+  @override
+  String get connectByIpHint =>
+      'Karşı cihaz aynı ağda olmalı ve TakeIt açık olmalı.';
+
+  @override
+  String get sendInvite => 'Davet Gönder';
+
+  @override
+  String get invalidIpAddress => 'Geçersiz IP adresi';
+
+  @override
+  String get thisDeviceIp => 'Bu cihazın IP adresi';
+
+  @override
+  String get ipNotAvailable => 'Bulunamadı';
+
+  @override
+  String get refresh => 'Yenile';
 }

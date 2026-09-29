@@ -6,6 +6,12 @@ class BackgroundTransferService {
   static bool _initialized = false;
   static bool _running = false;
 
+  /// Progress arrives ~10×/s per transfer, but each notification update is
+  /// a platform-channel round trip — refreshing about once a second is
+  /// plenty for a status line.
+  static const _minProgressInterval = Duration(seconds: 1);
+  static DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   static void init() {
     if (_initialized) return;
     if (!Platform.isAndroid && !Platform.isIOS) {
@@ -65,6 +71,12 @@ class BackgroundTransferService {
 
   static Future<void> updateProgress(String fileName, int percent) async {
     if (!_running) return;
+    final now = DateTime.now();
+    if (percent < 100 &&
+        now.difference(_lastProgressAt) < _minProgressInterval) {
+      return;
+    }
+    _lastProgressAt = now;
     await FlutterForegroundTask.updateService(
       notificationTitle: 'TakeIt',
       notificationText: '$fileName — $percent%',

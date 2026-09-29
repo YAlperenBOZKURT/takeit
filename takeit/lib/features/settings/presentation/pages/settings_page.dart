@@ -456,10 +456,8 @@ class _LocalIpTileState extends State<_LocalIpTile>
     });
   }
 
-  bool get _isTurkish => Localizations.localeOf(context).languageCode == 'tr';
-
-  String get _title => _isTurkish ? 'Bu cihazın IP adresi' : 'This device IP';
-  String get _empty => _isTurkish ? 'Bulunamadı' : 'Not available';
+  String get _title => AppStrings.of(context).thisDeviceIp;
+  String get _empty => AppStrings.of(context).ipNotAvailable;
 
   @override
   Widget build(BuildContext context) {
@@ -480,7 +478,7 @@ class _LocalIpTileState extends State<_LocalIpTile>
             children: [
               IconButton(
                 icon: const Icon(Icons.refresh, size: 20),
-                tooltip: _isTurkish ? 'Yenile' : 'Refresh',
+                tooltip: AppStrings.of(context).refresh,
                 onPressed: _refresh,
               ),
               IconButton(
