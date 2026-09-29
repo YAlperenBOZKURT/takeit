@@ -378,7 +378,15 @@ void main() {
     await (await req.close()).drain<void>();
     client.close();
 
-    expect(await upload, anyOf(500, isNull));
+    // What matters is the receiver side (checked below). The test client's
+    // own request may never settle once the server has answered mid-body —
+    // on Linux it just hangs — so don't let it hold the test hostage;
+    // tearDown's forced server stop drops the connection.
+    final status = await upload.timeout(
+      const Duration(seconds: 3),
+      onTimeout: () => null,
+    );
+    expect(status, anyOf(500, isNull));
     expect(sessionOf(sessionId).status, TransferStatus.cancelled);
     final deadline = DateTime.now().add(const Duration(seconds: 2));
     while (downloadDir.listSync().isNotEmpty &&
