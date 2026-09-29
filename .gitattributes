@@ -1,0 +1,14 @@
+# Line endings: the repository stores LF, and Git compares/checks out text
+# files as LF on every OS. Without this, Windows checkouts made with CRLF
+# show nearly every file as modified even though no content changed.
+* text=auto eol=lf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.jar binary
