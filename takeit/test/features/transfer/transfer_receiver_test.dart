@@ -355,6 +355,47 @@ void main() {
     expect(downloadDir.listSync(), isEmpty, reason: 'nothing may be kept');
   });
 
+  test('a cancel from the sender stops the download mid-way', () async {
+    final payload = List<int>.generate(256 * 1024, (i) => i % 251);
+    final (sessionId, token) = await prepare('cancelled.bin', payload.length);
+
+    final upload = uploadSlowly(
+      sessionId,
+      token,
+      payload,
+      duration: const Duration(milliseconds: 600),
+      chunks: 12,
+    ).then<int?>((s) => s, onError: (_) => null);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    final client = HttpClient();
+    final req = await client.postUrl(
+      Uri.parse(
+        'http://127.0.0.1:$port/api/takeit/v1/transfer/cancel'
+        '?sessionId=$sessionId',
+      ),
+    );
+    await (await req.close()).drain<void>();
+    client.close();
+
+    // What matters is the receiver side (checked below). The test client's
+    // own request may never settle once the server has answered mid-body —
+    // on Linux it just hangs — so don't let it hold the test hostage;
+    // tearDown's forced server stop drops the connection.
+    final status = await upload.timeout(
+      const Duration(seconds: 3),
+      onTimeout: () => null,
+    );
+    expect(status, anyOf(500, isNull));
+    expect(sessionOf(sessionId).status, TransferStatus.cancelled);
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    while (downloadDir.listSync().isNotEmpty &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(downloadDir.listSync(), isEmpty, reason: '.part must be removed');
+  });
+
   test('room transfers from a device outside the room are refused', () async {
     await container.read(roomProvider.notifier).leaveRoom();
 

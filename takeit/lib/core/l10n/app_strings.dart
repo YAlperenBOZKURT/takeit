@@ -1159,6 +1159,48 @@ abstract class AppStrings {
   /// In en, this message translates to:
   /// **'Transfer failed'**
   String get transferFailedToast;
+
+  /// No description provided for @connectByIp.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect by IP'**
+  String get connectByIp;
+
+  /// No description provided for @connectByIpHint.
+  ///
+  /// In en, this message translates to:
+  /// **'The other device must be on the same network with TakeIt open.'**
+  String get connectByIpHint;
+
+  /// No description provided for @sendInvite.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Invite'**
+  String get sendInvite;
+
+  /// No description provided for @invalidIpAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid IP address'**
+  String get invalidIpAddress;
+
+  /// No description provided for @thisDeviceIp.
+  ///
+  /// In en, this message translates to:
+  /// **'This device IP'**
+  String get thisDeviceIp;
+
+  /// No description provided for @ipNotAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not available'**
+  String get ipNotAvailable;
+
+  /// No description provided for @refresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get refresh;
 }
 
 class _AppStringsDelegate extends LocalizationsDelegate<AppStrings> {

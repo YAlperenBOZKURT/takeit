@@ -71,8 +71,11 @@ class AppHttpServer {
   }
 
   Future<void> start() async {
-    final handler = const shelf.Pipeline()
-        .addMiddleware(shelf.logRequests())
+    var pipeline = const shelf.Pipeline();
+    // Logging every request (every chunked upload, ping, heartbeat probe…)
+    // is only useful while developing.
+    if (kDebugMode) pipeline = pipeline.addMiddleware(shelf.logRequests());
+    final handler = pipeline
         .addMiddleware(_injectRemoteIp())
         .addMiddleware(_privateSubnetOnly())
         .addMiddleware(_rateLimiter())

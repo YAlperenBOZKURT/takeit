@@ -98,8 +98,6 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
     }
   }
 
-  bool get _isTurkish => Localizations.localeOf(context).languageCode == 'tr';
-
   Future<void> _showJoinByIp() async {
     final ok = await confirmRoomSwitch(context, ref);
     if (!ok || !mounted) return;
@@ -109,7 +107,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
     final ip = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(_isTurkish ? 'IP ile bağlan' : 'Connect by IP'),
+        title: Text(AppStrings.of(context).connectByIp),
         contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -131,9 +129,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              _isTurkish
-                  ? 'Karşı cihaz aynı ağda olmalı ve TakeIt açık olmalı.'
-                  : 'The other device must be on the same network with TakeIt open.',
+              AppStrings.of(context).connectByIpHint,
               style: Theme.of(ctx).textTheme.bodySmall,
             ),
           ],
@@ -145,7 +141,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: Text(_isTurkish ? 'Davet Gönder' : 'Send Invite'),
+            child: Text(AppStrings.of(context).sendInvite),
           ),
         ],
       ),
@@ -154,11 +150,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
     if (ip == null || ip.isEmpty || !mounted) return;
     if (!_isValidIpv4(ip)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _isTurkish ? 'Geçersiz IP adresi' : 'Invalid IP address',
-          ),
-        ),
+        SnackBar(content: Text(AppStrings.of(context).invalidIpAddress)),
       );
       return;
     }
@@ -389,7 +381,7 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
           IconButton(
             onPressed: _showJoinByIp,
             icon: const Icon(Icons.link),
-            tooltip: _isTurkish ? 'IP ile bağlan' : 'Connect by IP',
+            tooltip: AppStrings.of(context).connectByIp,
           ),
           IconButton(
             onPressed: devices.isEmpty ? null : _showCreateRoom,

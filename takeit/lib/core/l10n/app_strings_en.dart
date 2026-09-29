@@ -597,4 +597,26 @@ class AppStringsEn extends AppStrings {
 
   @override
   String get transferFailedToast => 'Transfer failed';
+
+  @override
+  String get connectByIp => 'Connect by IP';
+
+  @override
+  String get connectByIpHint =>
+      'The other device must be on the same network with TakeIt open.';
+
+  @override
+  String get sendInvite => 'Send Invite';
+
+  @override
+  String get invalidIpAddress => 'Invalid IP address';
+
+  @override
+  String get thisDeviceIp => 'This device IP';
+
+  @override
+  String get ipNotAvailable => 'Not available';
+
+  @override
+  String get refresh => 'Refresh';
 }

@@ -15,6 +15,7 @@ import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/transfer_keep_alive.dart';
 import '../../../../core/services/transfer_queue_service.dart';
 import '../../../../core/services/window_alert_service.dart';
+import '../../../../core/utils/format_utils.dart';
 import '../../../../main.dart';
 import '../../../discovery/domain/entities/device.dart';
 import '../../../discovery/presentation/providers/device_actions_provider.dart';
@@ -61,16 +62,8 @@ class QuickSendDraftItem {
   bool get isFile => filePath != null;
   bool get isText => text != null;
 
-  String get displaySize {
-    if (isText) return '${text!.length} chars';
-    final bytes = fileSize ?? 0;
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
+  String get displaySize =>
+      isText ? '${text!.length} chars' : formatFileSize(fileSize ?? 0);
 
   QuickSendDraftItem.file({
     required this.filePath,
@@ -137,6 +130,10 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   /// Active outgoing sends, keyed by local sessionId.
   final Map<String, _ActiveQuickSend> _activeSends = {};
 
+  /// Sessions cancelled by either side — checked for every received chunk,
+  /// so a set lookup instead of scanning the transfer list each time.
+  final Set<String> _cancelledReceives = {};
+
   /// Retry info for failed outgoing sends, keyed by local sessionId.
   final Map<String, _QuickRetryInfo> _retryInfos = {};
 
@@ -189,6 +186,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
     final params = request.url.queryParameters;
     final sessionId = params['sessionId'];
     if (sessionId != null) {
+      _cancelledReceives.add(sessionId);
       _updateSession(
         sessionId,
         (s) => s.copyWith(status: TransferStatus.cancelled),
@@ -414,10 +412,8 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
       );
 
       await for (final chunk in body) {
-        final current = state
-            .where((s) => s.sessionId == sessionId)
-            .firstOrNull;
-        if (current?.status == TransferStatus.cancelled) {
+        // Cancelled on this side (by the user or the sender's cancel call).
+        if (_cancelledReceives.contains(sessionId)) {
           throw _QuickReceiverCancelled();
         }
 
@@ -518,6 +514,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
         }),
       );
     } finally {
+      _cancelledReceives.remove(sessionId);
       try {
         await sink?.close();
       } catch (_) {}
@@ -837,6 +834,7 @@ class QuickTransferNotifier extends StateNotifier<List<TransferSession>> {
   }
 
   void cancelSession(String sessionId) {
+    _cancelledReceives.add(sessionId);
     _updateSession(
       sessionId,
       (s) => s.copyWith(status: TransferStatus.cancelled),

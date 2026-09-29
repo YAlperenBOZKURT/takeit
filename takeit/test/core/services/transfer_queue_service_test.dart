@@ -71,6 +71,45 @@ void main() {
     });
   });
 
+  group('download slots', () {
+    test('a waiting upload starts as soon as a slot frees up', () async {
+      for (var i = 0; i < TransferQueueService.maxParallelDownloads; i++) {
+        expect(await queue.waitForDownloadSlot('busy-$i'), isTrue);
+      }
+
+      var started = false;
+      final waiting = queue
+          .waitForDownloadSlot('next')
+          .then((ok) => started = ok);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(started, isFalse, reason: 'all slots are taken');
+
+      final freedAt = DateTime.now();
+      queue.downloadCompleted('busy-0', senderAlias: 'x');
+      await waiting;
+
+      expect(started, isTrue);
+      expect(
+        DateTime.now().difference(freedAt),
+        lessThan(const Duration(milliseconds: 200)),
+        reason: 'woken right away, not on the next poll',
+      );
+    });
+
+    test('a waiting upload gives up after its timeout', () async {
+      for (var i = 0; i < TransferQueueService.maxParallelDownloads; i++) {
+        await queue.waitForDownloadSlot('busy-$i');
+      }
+
+      final ok = await queue.waitForDownloadSlot(
+        'next',
+        timeout: const Duration(milliseconds: 100),
+      );
+
+      expect(ok, isFalse);
+    });
+  });
+
   test('only the sending device can cancel its pending batch', () async {
     final a = _batch('a', ip: '192.168.1.10');
     final result = queue.enqueueBatch(a);
