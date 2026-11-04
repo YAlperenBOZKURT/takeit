@@ -6,6 +6,7 @@ import '../../../chat/presentation/pages/chat_page.dart';
 import '../../../discovery/presentation/pages/device_list_page.dart';
 import '../../../quick_send/presentation/pages/quick_send_page.dart';
 import '../../../settings/presentation/pages/settings_page.dart';
+import '../widgets/incoming_popup_host.dart';
 
 /// Currently selected bottom-nav tab: 0 Nearby · 1 Chat · 2 Send · 3 Settings.
 final homeTabProvider = StateProvider<int>((ref) => 0);
@@ -52,46 +53,48 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     _builtTabs.add(index);
     final s = AppStrings.of(context);
 
-    return Scaffold(
-      body: IndexedStack(
-        index: index,
-        children: [
-          for (var i = 0; i < _tabs.length; i++)
-            if (_builtTabs.contains(i))
-              KeyedSubtree(
-                key: _tabKeys[i],
-                child: ScaffoldMessenger(child: _tabs[i]),
-              )
-            else
-              const SizedBox.shrink(),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (i) =>
-            ref.read(homeTabProvider.notifier).state = i,
-        destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.sensors_outlined),
-            selectedIcon: const Icon(Icons.sensors),
-            label: s.nearbyTab,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.chat_bubble_outline),
-            selectedIcon: const Icon(Icons.chat_bubble),
-            label: s.chat,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.upload_outlined),
-            selectedIcon: const Icon(Icons.upload),
-            label: s.send,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.settings_outlined),
-            selectedIcon: const Icon(Icons.settings),
-            label: s.settings,
-          ),
-        ],
+    return IncomingPopupHost(
+      child: Scaffold(
+        body: IndexedStack(
+          index: index,
+          children: [
+            for (var i = 0; i < _tabs.length; i++)
+              if (_builtTabs.contains(i))
+                KeyedSubtree(
+                  key: _tabKeys[i],
+                  child: ScaffoldMessenger(child: _tabs[i]),
+                )
+              else
+                const SizedBox.shrink(),
+          ],
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: index,
+          onDestinationSelected: (i) =>
+              ref.read(homeTabProvider.notifier).state = i,
+          destinations: [
+            NavigationDestination(
+              icon: const Icon(Icons.sensors_outlined),
+              selectedIcon: const Icon(Icons.sensors),
+              label: s.nearbyTab,
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.chat_bubble_outline),
+              selectedIcon: const Icon(Icons.chat_bubble),
+              label: s.chat,
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.upload_outlined),
+              selectedIcon: const Icon(Icons.upload),
+              label: s.send,
+            ),
+            NavigationDestination(
+              icon: const Icon(Icons.settings_outlined),
+              selectedIcon: const Icon(Icons.settings),
+              label: s.settings,
+            ),
+          ],
+        ),
       ),
     );
   }

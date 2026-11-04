@@ -6,18 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/l10n/app_strings.dart';
 import '../../../home/presentation/pages/home_shell.dart';
 import '../../../clipboard/presentation/providers/clipboard_provider.dart';
-import '../../../clipboard/presentation/widgets/clipboard_popup.dart';
 import '../../../discovery/presentation/providers/discovery_provider.dart';
 import '../../../room/domain/entities/room_member.dart';
 import '../../../room/presentation/providers/room_provider.dart';
-import '../../../../core/services/transfer_queue_service.dart';
 import '../../../transfer/presentation/providers/transfer_provider.dart';
-import '../../../transfer/presentation/widgets/transfer_approval_sheet.dart';
 import '../../domain/entities/message.dart';
 import '../providers/chat_provider.dart';
 import '../../../quick_send/presentation/providers/quick_send_provider.dart';
-import '../../../quick_send/presentation/widgets/quick_text_popup.dart';
-import '../../../room/presentation/pages/room_invite_sheet.dart';
 import '../widgets/chat_input_bar.dart';
 import '../widgets/clipboard_bubble.dart';
 import '../widgets/file_bubble.dart';
@@ -38,9 +33,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   bool _isNearBottom = true;
   bool _isDragging = false;
   final _notifiedIds = <String>{};
-
-  /// Single-popup mutex. Priority: invite > approval > quickText/clipboard.
-  String? _activePopup;
 
   @override
   void initState() {
@@ -138,25 +130,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       }
     });
 
-    // Listen for incoming room invites (while in chat)
-    ref.listen(roomInvitesProvider, (prev, next) {
-      if (next.length > (prev?.length ?? 0)) _checkPopupQueue();
-    });
-
-    // Listen for incoming file transfer requests (global queue)
-    ref.listen(currentApprovalProvider, (prev, next) {
-      if (next != null) _checkPopupQueue();
-    });
-
-    // Listen for incoming clipboard
-    ref.listen(incomingClipboardProvider, (prev, next) {
-      if (next != null) _checkPopupQueue();
-    });
-
-    // Listen for incoming quick text
-    ref.listen(incomingQuickTextProvider, (prev, next) {
-      if (next != null) _checkPopupQueue();
-    });
+    // Incoming invites/approvals/clipboard/texts are shown by
+    // IncomingPopupHost, once for the whole shell.
 
     if (room == null) {
       final noRoomS = AppStrings.of(context);
@@ -438,80 +413,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       'txt' => 'text/plain',
       _ => null,
     };
-  }
-
-  void _showClipboardPopup(Map<String, dynamic> data) {
-    showDialog(
-      context: context,
-      builder: (_) => ClipboardPopup(
-        senderAlias: data['senderAlias'] as String? ?? 'Someone',
-        content: data['content'] as String? ?? '',
-      ),
-    );
-  }
-
-  void _showTransferApproval(TransferBatch batch) {
-    _activePopup = 'approval';
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (_) => TransferApprovalSheet(batch: batch),
-    ).then((_) {
-      _activePopup = null;
-      _checkPopupQueue();
-    });
-  }
-
-  void _showRoomInvite(Map<String, dynamic> invite) {
-    _activePopup = 'invite';
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (_) => RoomInviteSheet(invite: invite),
-    ).then((accepted) {
-      _activePopup = null;
-      if (accepted == true && mounted) {
-        // Already in chat — the room provider will handle the switch
-        return;
-      }
-      _checkPopupQueue();
-    });
-  }
-
-  void _checkPopupQueue() {
-    if (!mounted || _activePopup != null) return;
-
-    final invites = ref.read(roomInvitesProvider);
-    if (invites.isNotEmpty) {
-      _showRoomInvite(invites.last);
-      return;
-    }
-
-    final approval = ref.read(currentApprovalProvider);
-    if (approval != null) {
-      _showTransferApproval(approval);
-      return;
-    }
-
-    final clipboard = ref.read(incomingClipboardProvider);
-    if (clipboard != null) {
-      ref.read(incomingClipboardProvider.notifier).state = null;
-      _showClipboardPopup(clipboard);
-      return;
-    }
-
-    final quickText = ref.read(incomingQuickTextProvider);
-    if (quickText != null) {
-      ref.read(incomingQuickTextProvider.notifier).state = null;
-      _activePopup = 'quickText';
-      showDialog(
-        context: context,
-        builder: (_) => QuickTextPopup(message: quickText),
-      ).then((_) {
-        _activePopup = null;
-        _checkPopupQueue();
-      });
-    }
   }
 
   void _confirmLeaveRoom() {

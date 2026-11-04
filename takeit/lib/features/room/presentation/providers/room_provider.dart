@@ -108,6 +108,7 @@ class RoomNotifier extends StateNotifier<Room?> {
 
   /// Ends the current room locally.
   void _dissolveRoom() {
+    _syncDebounce?.cancel();
     _failedPings.clear();
     _lastSyncSeq.clear();
     state = null;
@@ -420,10 +421,9 @@ class RoomNotifier extends StateNotifier<Room?> {
       }
     }
 
-    if (state != null) {
-      await leaveRoom();
-    }
-    _ref.read(pendingRoomProvider.notifier).state = null;
+    // Also abandons a room still waiting for accepts, withdrawing its
+    // invites so they don't linger on the invitees' screens.
+    await leaveRoom();
     _ref.read(chatProvider.notifier).clearMessages();
 
     final fingerprint = _ref.read(fingerprintProvider);
@@ -467,10 +467,9 @@ class RoomNotifier extends StateNotifier<Room?> {
     final trimmed = ip.trim();
     if (trimmed.isEmpty) return;
 
-    if (state != null) {
-      await leaveRoom();
-    }
-    _ref.read(pendingRoomProvider.notifier).state = null;
+    // Also abandons a room still waiting for accepts, withdrawing its
+    // invites so they don't linger on the invitees' screens.
+    await leaveRoom();
     _ref.read(chatProvider.notifier).clearMessages();
 
     final fingerprint = _ref.read(fingerprintProvider);
@@ -571,9 +570,17 @@ class RoomNotifier extends StateNotifier<Room?> {
     }
   }
 
+  /// Removes an invitee of the active room who will not join (declined,
+  /// unreachable or timed out) and tells the members, whose rosters would
+  /// otherwise keep showing them as pending.
+  void _dropInvitee(String fingerprint) {
+    _updateMemberStatus(fingerprint, MemberStatus.declined);
+    _broadcastMemberSync();
+  }
+
   void _handleInviteFailure(RoomMember member) {
     if (state != null) {
-      _updateMemberStatus(member.fingerprint, MemberStatus.declined);
+      _dropInvitee(member.fingerprint);
     } else {
       final pending = _ref.read(pendingRoomProvider);
       if (pending != null) {
@@ -603,7 +610,7 @@ class RoomNotifier extends StateNotifier<Room?> {
       );
       if (current.status == MemberStatus.pending) {
         debugPrint('Invite to ${member.alias} timed out');
-        _updateMemberStatus(member.fingerprint, MemberStatus.declined);
+        _dropInvitee(member.fingerprint);
       }
       return;
     }
@@ -735,6 +742,14 @@ class RoomNotifier extends StateNotifier<Room?> {
     }
 
     if (state == null || state!.id != roomId) {
+      // Not our room — but it may be one we were invited to and whose host
+      // has since abandoned it.
+      if (_withdrawQueuedInvite(roomId, fingerprint, remoteIpOf(request))) {
+        return shelf.Response.ok(
+          jsonEncode({'status': 'withdrawn'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
       return shelf.Response.notFound('');
     }
 
@@ -934,9 +949,25 @@ class RoomNotifier extends StateNotifier<Room?> {
   /// Simple ping endpoint — returns OK if alive + current room ID.
   Future<shelf.Response> _handlePing(shelf.Request request) async {
     return shelf.Response.ok(
-      jsonEncode({'status': 'ok', 'roomId': state?.id}),
+      jsonEncode({'status': 'ok', 'roomId': _roomIdForPing(request)}),
       headers: {'Content-Type': 'application/json'},
     );
+  }
+
+  /// The room a ping reports us in.
+  ///
+  /// An invitee joins its room the moment it accepts, before the host has
+  /// processed that accept. A ping landing in between used to report no
+  /// room, so the invitee took the host for gone and left again. While the
+  /// room still waits for its first accept, report it — but only to the
+  /// invitees themselves.
+  String? _roomIdForPing(shelf.Request request) {
+    if (state != null) return state!.id;
+    final pending = _ref.read(pendingRoomProvider);
+    if (pending == null || !isHost) return null;
+    return isFromAllowedIp(request, pending.members.map((m) => m.ip))
+        ? pending.roomId
+        : null;
   }
 
   void _updateMemberStatus(String fingerprint, MemberStatus status) {
@@ -1029,6 +1060,29 @@ class RoomNotifier extends StateNotifier<Room?> {
     }
   }
 
+  /// Drops the queued invite to [roomId] when its host withdraws it. Only
+  /// that host, from the address the invite came from, may withdraw it.
+  bool _withdrawQueuedInvite(
+    String roomId,
+    String hostFingerprint,
+    String? senderIp,
+  ) {
+    final invites = _ref.read(roomInvitesProvider);
+    final isQueued = invites.any(
+      (i) =>
+          i['roomId'] == roomId &&
+          i['hostFingerprint'] == hostFingerprint &&
+          senderIp != null &&
+          i['hostIp'] == senderIp,
+    );
+    if (!isQueued) return false;
+    debugPrint('Invite to room $roomId withdrawn by its host');
+    _ref.read(roomInvitesProvider.notifier).state = invites
+        .where((i) => i['roomId'] != roomId)
+        .toList();
+    return true;
+  }
+
   void _removeInviteFromQueue(Map<String, dynamic> invite) {
     final current = _ref.read(roomInvitesProvider);
     _ref.read(roomInvitesProvider.notifier).state = current
@@ -1068,7 +1122,7 @@ class RoomNotifier extends StateNotifier<Room?> {
 
     if (state != null) {
       // Room exists — remove declined member
-      _updateMemberStatus(fingerprint, MemberStatus.declined);
+      _dropInvitee(fingerprint);
     } else {
       // Room not created yet — remove from pending
       final pending = _ref.read(pendingRoomProvider);
@@ -1096,50 +1150,61 @@ class RoomNotifier extends StateNotifier<Room?> {
     );
   }
 
+  /// Leaves the current room, or abandons the room still waiting for its
+  /// first accept.
+  ///
+  /// The room ends locally first, so the UI never shows a room that is
+  /// already being left and late requests for it are refused. Then everyone
+  /// who still thinks we are in it is told:
+  /// - as host: every member, and every invitee whose invite is unanswered
+  ///   (the leave withdraws it — otherwise it would keep popping up and
+  ///   accepting it would join a room that no longer exists);
+  /// - as member: the host, which updates everyone else.
   Future<void> leaveRoom() async {
-    if (state == null && _ref.read(pendingRoomProvider) == null) return;
-
     final room = state;
+    final pending = _ref.read(pendingRoomProvider);
+    if (room == null && pending == null) return;
+
+    final wasHost = isHost;
     final fingerprint = _ref.read(fingerprintProvider);
 
+    final recipients = <RoomMember>[];
+    String? roomId;
     if (room != null) {
-      if (isHost) {
-        final notifications = <Future<void>>[];
-        for (final member in room.members) {
-          if (member.status != MemberStatus.accepted) continue;
-          notifications.add(
-            Future(() async {
-              try {
-                await _client.post(
-                  'http://${member.ip}:${member.port}/api/takeit/v1/room/leave',
-                  data: {'roomId': room.id, 'fingerprint': fingerprint},
-                );
-              } catch (_) {}
-            }),
-          );
-        }
-        // Send in parallel, don't wait forever
-        await Future.wait(
-          notifications,
-        ).timeout(const Duration(seconds: 3), onTimeout: () => []);
+      roomId = room.id;
+      if (wasHost) {
+        recipients.addAll(room.members);
       } else {
-        final host = room.members
-            .where((m) => m.fingerprint == room.hostFingerprint)
-            .firstOrNull;
-        if (host != null) {
-          try {
-            await _client.post(
-              'http://${host.ip}:${host.port}/api/takeit/v1/room/leave',
-              data: {'roomId': room.id, 'fingerprint': fingerprint},
-            );
-          } catch (_) {}
-        }
+        recipients.addAll(
+          room.members.where((m) => m.fingerprint == room.hostFingerprint),
+        );
       }
+    } else if (pending != null) {
+      roomId = pending.roomId;
+      recipients.addAll(pending.members);
     }
 
-    if (!mounted) return;
     _ref.read(pendingRoomProvider.notifier).state = null;
     _dissolveRoom();
+
+    // In parallel and best effort: an unreachable peer finds out through
+    // its own connection monitor, and an invite also expires on its own.
+    await Future.wait(
+      recipients.map((m) => _postLeave(m, roomId!, fingerprint)),
+    ).timeout(const Duration(seconds: 3), onTimeout: () => []);
+  }
+
+  Future<void> _postLeave(
+    RoomMember to,
+    String roomId,
+    String fingerprint,
+  ) async {
+    try {
+      await _client.post(
+        'http://${to.ip}:${to.port}/api/takeit/v1/room/leave',
+        data: {'roomId': roomId, 'fingerprint': fingerprint},
+      );
+    } catch (_) {}
   }
 
   int get onlineMemberCount {

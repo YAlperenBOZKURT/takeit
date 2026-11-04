@@ -9,7 +9,6 @@ import '../../../home/presentation/pages/home_shell.dart';
 import '../../../../main.dart';
 import '../../../room/domain/entities/room_member.dart';
 import '../../../room/presentation/pages/create_room_sheet.dart';
-import '../../../room/presentation/pages/room_invite_sheet.dart';
 import '../../../room/presentation/providers/room_provider.dart';
 import '../../../room/presentation/utils/room_switch_guard.dart';
 import '../../../../core/widgets/connectivity_banner.dart';
@@ -17,11 +16,7 @@ import '../../domain/entities/device.dart';
 import '../providers/discovery_provider.dart';
 import '../widgets/device_tile.dart';
 import '../../../history/presentation/pages/history_page.dart';
-import '../../../../core/services/transfer_queue_service.dart';
-import '../../../quick_send/presentation/providers/quick_send_provider.dart';
 import '../../../quick_send/presentation/widgets/quick_send_sheet.dart';
-import '../../../quick_send/presentation/widgets/quick_text_popup.dart';
-import '../../../transfer/presentation/widgets/transfer_approval_sheet.dart';
 import '../../../transfer/domain/entities/transfer_session.dart';
 import '../../../transfer/presentation/providers/session_transfers_provider.dart';
 import '../../../transfer/presentation/widgets/transfers_fab.dart';
@@ -34,10 +29,6 @@ class DeviceListPage extends ConsumerStatefulWidget {
 }
 
 class _DeviceListPageState extends ConsumerState<DeviceListPage> {
-  /// Single-popup mutex. Only one of invite/approval/quickText is visible at
-  /// a time. Priority: invite > approval > quickText.
-  String? _activePopup;
-
   /// Desktop drag & drop state for file quick-send.
   bool _isDragging = false;
 
@@ -50,9 +41,8 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
     Future.microtask(() {
       ref.read(discoveryControllerProvider.notifier).startDiscovery();
     });
-    // Drain any queued popups from when this page wasn't mounted
+    // Incoming invites/approvals/texts are shown by IncomingPopupHost.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkPopupQueue();
       _showServerErrorIfAny();
     });
   }
@@ -75,27 +65,6 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
         ],
       ),
     );
-  }
-
-  void _checkPopupQueue() {
-    if (!mounted || _activePopup != null) return;
-
-    final invites = ref.read(roomInvitesProvider);
-    if (invites.isNotEmpty) {
-      _showInvite(invites.last);
-      return;
-    }
-
-    final approval = ref.read(currentApprovalProvider);
-    if (approval != null) {
-      _showApproval(approval);
-      return;
-    }
-
-    final quickText = ref.read(incomingQuickTextProvider);
-    if (quickText != null) {
-      _showQuickText(quickText);
-    }
   }
 
   Future<void> _showJoinByIp() async {
@@ -255,62 +224,10 @@ class _DeviceListPageState extends ConsumerState<DeviceListPage> {
     }
   }
 
-  void _showInvite(Map<String, dynamic> invite) {
-    _activePopup = 'invite';
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (_) => RoomInviteSheet(invite: invite),
-    ).then((accepted) {
-      _activePopup = null;
-      if (accepted == true && mounted) {
-        ref.read(homeTabProvider.notifier).state = 1;
-        return;
-      }
-      _checkPopupQueue();
-    });
-  }
-
-  void _showApproval(TransferBatch batch) {
-    _activePopup = 'approval';
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (_) => TransferApprovalSheet(batch: batch),
-    ).then((_) {
-      _activePopup = null;
-      _checkPopupQueue();
-    });
-  }
-
-  void _showQuickText(QuickTextMessage message) {
-    _activePopup = 'quickText';
-    ref.read(incomingQuickTextProvider.notifier).state = null;
-    showDialog(
-      context: context,
-      builder: (_) => QuickTextPopup(message: message),
-    ).then((_) {
-      _activePopup = null;
-      _checkPopupQueue();
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final devices = ref.watch(discoveryControllerProvider);
     final theme = Theme.of(context);
-
-    // Prioritized popup queue: invite > approval > quickText.
-    // Only trigger on additions, not removals.
-    ref.listen(roomInvitesProvider, (prev, next) {
-      if (next.length > (prev?.length ?? 0)) _checkPopupQueue();
-    });
-    ref.listen(currentApprovalProvider, (prev, next) {
-      if (next != null) _checkPopupQueue();
-    });
-    ref.listen(incomingQuickTextProvider, (prev, next) {
-      if (next != null) _checkPopupQueue();
-    });
 
     // Show toast on transfer decline / failure
     ref.listen(sessionTransfersProvider, (prev, next) {
