@@ -24,11 +24,11 @@ class _RoomInviteSheetState extends ConsumerState<RoomInviteSheet> {
     final hostAlias = invite['hostAlias'] as String? ?? 'Someone';
     final bottomPadding = MediaQuery.of(context).viewPadding.bottom;
 
-    // Auto-dismiss if this invite was removed (e.g., sender went offline).
+    // Auto-dismiss once this invite leaves the queue (expired, withdrawn,
+    // sender went offline, or replaced by a newer invite from the same host).
     // Skip when the user is actively accepting/declining to avoid double-pop.
     final invites = ref.watch(roomInvitesProvider);
-    final hostFp = invite['hostFingerprint'] as String?;
-    final stillQueued = invites.any((i) => i['hostFingerprint'] == hostFp);
+    final stillQueued = invites.any((i) => i['roomId'] == invite['roomId']);
     if (!stillQueued && !_acting) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) Navigator.of(context).pop(false);

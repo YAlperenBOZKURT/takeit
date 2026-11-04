@@ -95,7 +95,189 @@ Future<int> _post(_Peer peer, String path, Map<String, dynamic> body) async {
   return res.statusCode;
 }
 
+/// GETs [path] from [peer] and returns the decoded JSON body.
+Future<Map<String, dynamic>> _getJson(_Peer peer, String path) async {
+  final client = HttpClient();
+  final req = await client.getUrl(
+    Uri.parse('http://127.0.0.1:${peer.port}/api/takeit/v1$path'),
+  );
+  final res = await req.close();
+  final body = await res.transform(utf8.decoder).join();
+  client.close();
+  return jsonDecode(body) as Map<String, dynamic>;
+}
+
+bool _hasMember(_Peer peer, String fingerprint) =>
+    peer.room?.members.any((m) => m.fingerprint == fingerprint) ?? false;
+
+bool _hasAccepted(_Peer peer, String fingerprint) =>
+    peer.room?.members.any(
+      (m) => m.fingerprint == fingerprint && m.status == MemberStatus.accepted,
+    ) ??
+    false;
+
+/// Rooms with more than two people, and the ways they end.
+void _lifecycleTests() {
+  late _Peer host;
+  late _Peer a;
+  late _Peer b;
+
+  setUp(() async {
+    host = await _Peer.start('host-fp');
+    a = await _Peer.start('a-fp');
+    b = await _Peer.start('b-fp');
+  });
+
+  tearDown(() async {
+    await host.dispose();
+    await a.dispose();
+    await b.dispose();
+  });
+
+  Future<void> join(_Peer guest) async {
+    await eventually(() => guest.invites.isNotEmpty, reason: 'invite');
+    await guest.notifier.acceptInvite(guest.invites.last);
+    await eventually(
+      () => _hasAccepted(host, guest.fingerprint),
+      reason: 'host sees ${guest.fingerprint} accepted',
+    );
+  }
+
+  /// Host, a and b all in one room, every roster complete.
+  Future<void> formRoomOfThree() async {
+    await host.notifier.createRoom([a.asDevice, b.asDevice]);
+    await join(a);
+    await join(b);
+    await eventually(
+      () => _hasAccepted(a, b.fingerprint) && _hasAccepted(b, a.fingerprint),
+      reason: 'members see each other',
+    );
+  }
+
+  test('leaving ends the room locally right away', () async {
+    await formRoomOfThree();
+
+    final leaving = a.notifier.leaveRoom();
+    expect(a.room, isNull, reason: 'not only after the peers answered');
+    await leaving;
+  });
+
+  test('a member leaving is dropped from the other members too', () async {
+    await formRoomOfThree();
+
+    await a.notifier.leaveRoom();
+
+    await eventually(
+      () => !_hasMember(b, a.fingerprint) && !_hasMember(host, a.fingerprint),
+      reason: 'roster without a',
+    );
+    expect(b.room, isNotNull, reason: 'host and b are still together');
+    expect(host.room, isNotNull);
+  });
+
+  test('two members leaving at once dissolves the room everywhere', () async {
+    await formRoomOfThree();
+
+    await Future.wait([a.notifier.leaveRoom(), b.notifier.leaveRoom()]);
+
+    await eventually(() => host.room == null, reason: 'host alone → ends');
+    expect(a.room, isNull);
+    expect(b.room, isNull);
+  });
+
+  test('host and a member leaving at once dissolves the room '
+      'everywhere', () async {
+    await formRoomOfThree();
+
+    await Future.wait([host.notifier.leaveRoom(), a.notifier.leaveRoom()]);
+
+    await eventually(() => b.room == null, reason: 'b learns the host left');
+    expect(host.room, isNull);
+    expect(a.room, isNull);
+  });
+
+  test('an invitee declining is dropped from the members\' rosters', () async {
+    await host.notifier.createRoom([a.asDevice, b.asDevice]);
+    await join(a);
+    await eventually(() => _hasMember(a, b.fingerprint), reason: 'b pending');
+    await eventually(() => b.invites.isNotEmpty);
+
+    await b.notifier.declineInvite(b.invites.last);
+
+    await eventually(
+      () => !_hasMember(a, b.fingerprint),
+      reason: 'a must not keep showing b as pending',
+    );
+    expect(host.room, isNotNull);
+  });
+
+  test('host leaving withdraws invites that are still unanswered', () async {
+    await host.notifier.createRoom([a.asDevice, b.asDevice]);
+    await join(a);
+    await eventually(() => b.invites.isNotEmpty);
+
+    await host.notifier.leaveRoom();
+
+    await eventually(() => b.invites.isEmpty, reason: 'invite withdrawn');
+    await eventually(() => a.room == null, reason: 'member told');
+  });
+
+  test('abandoning a room before anyone accepted withdraws its '
+      'invites', () async {
+    await host.notifier.createRoom([a.asDevice, b.asDevice]);
+    await eventually(() => a.invites.isNotEmpty && b.invites.isNotEmpty);
+
+    await host.notifier.leaveRoom();
+
+    await eventually(
+      () => a.invites.isEmpty && b.invites.isEmpty,
+      reason: 'both invites withdrawn',
+    );
+  });
+
+  test('creating a new room withdraws the previous room\'s invites', () async {
+    await host.notifier.createRoom([a.asDevice]);
+    await eventually(() => a.invites.isNotEmpty);
+
+    await host.notifier.createRoom([b.asDevice]);
+
+    await eventually(() => b.invites.isNotEmpty, reason: 'new invite');
+    await eventually(() => a.invites.isEmpty, reason: 'old invite withdrawn');
+  });
+
+  test('only the inviting host can withdraw an invite', () async {
+    await host.notifier.createRoom([a.asDevice]);
+    await eventually(() => a.invites.isNotEmpty);
+    final roomId = a.invites.last['roomId'] as String;
+
+    final status = await _post(a, '/room/leave', {
+      'roomId': roomId,
+      'fingerprint': b.fingerprint,
+    });
+
+    expect(status, 404);
+    expect(a.invites, hasLength(1));
+  });
+
+  test('ping reports a room still waiting for its first accept to its '
+      'invitees', () async {
+    // An invitee that has just accepted already sits in the room; a ping
+    // answered with "no room" made it leave again.
+    await host.notifier.createRoom([a.asDevice]);
+    await eventually(() => a.invites.isNotEmpty);
+
+    final ping = await _getJson(host, '/ping');
+
+    expect(ping['roomId'], a.invites.last['roomId']);
+  });
+}
+
 void main() {
+  group('two peers', _twoPeerTests);
+  group('room lifecycle', _lifecycleTests);
+}
+
+void _twoPeerTests() {
   late _Peer host;
   late _Peer guest;
 
